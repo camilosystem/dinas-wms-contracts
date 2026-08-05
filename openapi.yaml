@@ -1,9 +1,52 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.29.0
+  version: 0.30.0
   description: >
     Contrato de la API del middleware Dinas WMS.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.30.0 — ADMIN PUEDE USAR EL CARRITO DEL DASHBOARD
+    ══════════════════════════════════════════════════════════════════════════
+
+    ★ QUÉ AGREGA
+      Un ADMIN puede ahora tomar pedidos desde el carrito del Dashboard, a
+      nombre de un vendedor.
+
+      El problema de fondo que esto resuelve: todo el carrito está anclado
+      al salesperson_code del token, y un ADMIN no tiene uno. Un pedido sin
+      vendedor dueño no existe como concepto — de él dependen las
+      comisiones, los filtros de SAP y la asignación de clientes.
+
+      La solución reusa el patrón que ya usa POST /account-payments: el
+      ADMIN elige explícitamente de qué vendedor es el pedido.
+
+      · OrderCreate gana `salesperson_code` — OBLIGATORIO para ADMIN,
+        IGNORADO y sobrescrito desde el token para VENDEDOR y
+        VENDEDOR_INSTITUCIONAL. Un vendedor no puede atribuir un pedido a
+        otro, ni aunque mande el campo.
+
+      · OrderSummary gana `created_by` — quién CREÓ el pedido, distinto de
+        salesperson_code (a quién PERTENECE). Deja rastro de que un ADMIN
+        lo tomó a nombre de otro. NULL en pedidos anteriores a v0.30.0: la
+        columna nace vacía y no se puede reconstruir hacia atrás.
+
+      · POST /orders, GET /sync/catalog, GET /sync/clients y GET
+        /promotions autorizan también a ADMIN.
+
+      · GET /sync/clients y GET /promotions ganan el query param
+        `salesperson_code`, válido SOLO para ADMIN — los vendedores lo
+        mandan y se ignora, mismo criterio que ya usa GET /my-orders.
+        GET /sync/catalog no lo necesita: no filtra por vendedor.
+
+    ★ QUÉ NO CAMBIA
+      GET /my-orders sigue siendo exclusivo de VENDEDOR_INSTITUCIONAL. Un
+      ADMIN ve las órdenes por GET /admin/orders, que ya filtra por
+      salesperson_code — no hacía falta abrirle una segunda vía.
+
+      El pipeline es el mismo para los tres roles: mismo Order.Status, sin
+      concepto de canal, sin tratamiento distinto según quién lo creó. La
+      única diferencia observable en el dato es `created_by`.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.29.0 — ROL VENDEDOR_INSTITUCIONAL
@@ -1336,11 +1379,14 @@ paths:
       tags: [sync-down]
       summary: Catálogo con los 3 precios (vendedor)
       description: >
-        ★ v0.29.0 — REQUIERE VENDEDOR o VENDEDOR_INSTITUCIONAL. El rol
-        nuevo opera desde el Dashboard, no desde la app iOS, pero necesita
-        la misma superficie de sincronización para armar el carrito. Este
-        endpoint no filtra por vendedor: el catálogo es idéntico para
-        ambos roles.
+        ★ v0.30.0 — REQUIERE VENDEDOR, VENDEDOR_INSTITUCIONAL o ADMIN.
+        Este endpoint no filtra por vendedor: el catálogo es idéntico para
+        los tres roles, así que un ADMIN no necesita indicar
+        salesperson_code acá (a diferencia de /sync/clients y /promotions).
+
+        ★ v0.29.0 — VENDEDOR_INSTITUCIONAL opera desde el Dashboard, no
+        desde la app iOS, pero necesita la misma superficie de
+        sincronización para armar el carrito.
 
         Solo llegan ítems con SellItem='Y' en SAP.
         Un precio de 0 es VÁLIDO y el ítem ES ORDENABLE (muestra / publicidad).
@@ -1366,12 +1412,14 @@ paths:
       tags: [sync-down]
       summary: Clientes del vendedor, CON SUS DATOS DE CARTERA
       description: >
-        ★ v0.29.0 — REQUIERE VENDEDOR o VENDEDOR_INSTITUCIONAL. Sin cambio
-        de filtro para el rol nuevo: ambos ven ÚNICAMENTE los clientes
-        asignados a su propio salesperson_code (mismo esquema, sin
-        excepción).
+        ★ v0.30.0 — REQUIERE VENDEDOR, VENDEDOR_INSTITUCIONAL o ADMIN.
+        Los dos primeros ven ÚNICAMENTE los clientes asignados a su propio
+        salesperson_code (del token, sin excepción). Un ADMIN no tiene
+        salesperson_code, así que debe indicarlo por query param — ver
+        abajo.
 
-        Solo los clientes ASIGNADOS al vendedor del token.
+        Solo los clientes ASIGNADOS al vendedor (el del token, o el
+        indicado por un ADMIN).
 
         ★ v0.4.0: cada cliente incluye ahora su información de CRÉDITO
         (balance, cupo, mora). La app la usa para ADVERTIR offline.
@@ -1381,6 +1429,18 @@ paths:
         `proposed_applications` en POST /account-payments sin conexión.
       parameters:
         - $ref: '#/components/parameters/Since'
+        - name: salesperson_code
+          in: query
+          required: false
+          schema: { type: string }
+          description: >
+            ★ NUEVO en v0.30.0. SOLO para ADMIN. Un ADMIN no tiene
+            salesperson_code propio, así que debe indicar de qué vendedor
+            quiere los datos (400 si un ADMIN lo omite).
+
+            VENDEDOR y VENDEDOR_INSTITUCIONAL NO lo envían: si lo mandan se
+            IGNORA y se usa el del token, igual que en GET /my-orders. Un
+            vendedor nunca puede ver los datos de otro.
       responses:
         '200':
           description: Lista de clientes (delta)
@@ -1400,11 +1460,18 @@ paths:
       tags: [sync-down]
       summary: Estado ACTUAL de las órdenes del vendedor (delta)
       description: >
-        ★ v0.29.0 — REQUIERE VENDEDOR o VENDEDOR_INSTITUCIONAL. Sin cambio
-        de filtro: cada rol ve el estado ÚNICAMENTE de sus propias órdenes
-        (salesperson_code del token). Incluido junto con /sync/catalog y
-        /sync/clients porque comparten el [Authorize] a nivel de clase de
-        SyncController — y porque un institucional que toma pedidos
+        ★ v0.30.0 — sigue en VENDEDOR o VENDEDOR_INSTITUCIONAL: este
+        endpoint NO se abre a ADMIN, a diferencia de /sync/catalog y
+        /sync/clients. Un ADMIN ve las órdenes por GET /admin/orders, que
+        ya filtra por salesperson_code.
+
+        Nota para quien implemente: eso obliga a autorización por ACCIÓN en
+        SyncController, no a nivel de clase — un [Authorize] de clase con
+        ADMIN abriría este endpoint de arrastre, porque los atributos de
+        clase y método se acumulan con AND y no se aflojan hacia abajo.
+
+        ★ v0.29.0 — cada rol ve el estado ÚNICAMENTE de sus propias órdenes
+        (salesperson_code del token). Un institucional que toma pedidos
         necesita ver cómo evolucionan, igual que cualquier VENDEDOR.
 
         ★ NUEVO en v0.4.1.
@@ -1498,6 +1565,18 @@ paths:
         `unit_price = 0` y `line_discount_pct = 100` son VÁLIDOS.
         `price_list` debe estar entre las autorizadas del cliente (si no → 400,
         ver los códigos de error documentados abajo).
+
+        ★ v0.30.0 — REQUIERE VENDEDOR, VENDEDOR_INSTITUCIONAL o ADMIN.
+
+        ADMIN es nuevo acá: puede tomar pedidos desde el carrito del Dashboard
+        a nombre de un vendedor, y por eso `salesperson_code` es OBLIGATORIO
+        en su caso (ver OrderCreate). Para los otros dos roles nada cambia:
+        el servidor sigue resolviendo el vendedor desde el token e ignora el
+        campo si viene.
+
+        En todos los casos el pedido entra al MISMO pipeline y termina en el
+        mismo Order.Status — no hay concepto de canal ni tratamiento distinto
+        según quién lo creó. La única diferencia observable es `created_by`.
       requestBody:
         required: true
         content:
@@ -2445,23 +2524,39 @@ paths:
       tags: [promotions]
       summary: Libro de promociones del vendedor autenticado
       description: >
-        ★ v0.29.0 — REQUIERE VENDEDOR, ANALISTA_COMERCIAL o
-        VENDEDOR_INSTITUCIONAL: el libro va embebido en el carrito del
-        Dashboard. Misma regla de visibilidad para el rol nuevo — para que
-        un institucional vea promociones, el ANALISTA_COMERCIAL debe
+        ★ v0.30.0 — REQUIERE VENDEDOR, ANALISTA_COMERCIAL,
+        VENDEDOR_INSTITUCIONAL o ADMIN. Un ADMIN no tiene salesperson_code
+        propio, así que debe indicar por query param de qué vendedor quiere
+        el libro (400 si lo omite) — ver abajo.
+
+        ★ v0.29.0 — el libro va embebido en el carrito del Dashboard. Para
+        que un institucional vea promociones, el ANALISTA_COMERCIAL debe
         asignárselas a su salesperson_code como a cualquier otro vendedor;
         sin asignación el libro sale vacío y POST /orders rechaza el bloque.
 
         ★ v0.28.0. Solo devuelve
         las promociones ACTIVE, dentro de su vigencia (valid_from ≤ hoy
-        ≤ valid_to), y asignadas al vendedor autenticado
-        (PromotionSalesperson). El vendedor nunca ve las inactivas, las
+        ≤ valid_to), y asignadas al vendedor en cuestión
+        (PromotionSalesperson). Un vendedor nunca ve las inactivas, las
         vencidas, ni las de otros vendedores.
       parameters:
         - name: q
           in: query
           description: Búsqueda por título, código de ítem, o nombre de ítem
           schema: { type: string }
+        - name: salesperson_code
+          in: query
+          required: false
+          schema: { type: string }
+          description: >
+            ★ NUEVO en v0.30.0. SOLO para ADMIN, y OBLIGATORIO para él
+            (400 si lo omite): no tiene salesperson_code propio con el
+            cual filtrar.
+
+            VENDEDOR, VENDEDOR_INSTITUCIONAL y ANALISTA_COMERCIAL NO lo
+            envían: si lo mandan se IGNORA y se usa el del token, mismo
+            criterio que GET /my-orders. Un vendedor nunca ve el libro de
+            otro.
       responses:
         '200':
           description: Promociones disponibles para este vendedor
@@ -7182,6 +7277,28 @@ components:
       properties:
         client_uuid: { type: string, format: uuid }
         client_code: { type: string }
+        salesperson_code:
+          type: string
+          nullable: true
+          description: >
+            ★ NUEVO en v0.30.0. A qué vendedor pertenece el pedido.
+
+            Comportamiento CONDICIONAL AL ROL del llamador, mismo patrón que
+            POST /account-payments:
+
+            · VENDEDOR y VENDEDOR_INSTITUCIONAL — NO lo envían. Si lo mandan,
+              el servidor lo IGNORA y usa el del token. Un vendedor no puede
+              atribuir un pedido a otro.
+
+            · ADMIN — OBLIGATORIO. Un ADMIN no tiene salesperson_code propio,
+              así que debe elegir explícitamente de qué vendedor es el pedido
+              (400 si falta). Debe existir y corresponder a una cuenta con
+              código de vendedor — usar GET /admin/salespersons para poblar
+              el selector.
+
+            El pedido queda atribuido a este vendedor para todo efecto
+            (comisiones, filtros, asignación de clientes). Quién lo creó
+            realmente se registra aparte en created_by.
         taken_at: { type: string, format: date-time }
         notes: { type: string }
         lines:
@@ -7328,6 +7445,20 @@ components:
             - $ref: '#/components/schemas/HoldReason'
           nullable: true
         notes: { type: string }
+        created_by:
+          type: string
+          nullable: true
+          description: >
+            ★ NUEVO en v0.30.0. Usuario que CREÓ el pedido, distinto de
+            salesperson_code (a quién pertenece).
+
+            Para un pedido tomado por un VENDEDOR o VENDEDOR_INSTITUCIONAL,
+            coincide con su propio usuario. Para uno tomado por un ADMIN
+            desde el carrito del Dashboard a nombre de otro vendedor, es el
+            ADMIN — mientras salesperson_code apunta al vendedor dueño.
+
+            NULL en pedidos anteriores a v0.30.0 (la columna nace vacía; no
+            se puede reconstruir quién los creó).
         decided_by:
           type: string
           nullable: true
