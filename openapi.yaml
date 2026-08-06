@@ -1,9 +1,53 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.31.1
+  version: 0.31.2
   description: >
     Contrato de la API del middleware Dinas WMS.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.31.2 — line_id OBTENIBLE ANTES DE APROBAR
+    ══════════════════════════════════════════════════════════════════════════
+
+    ★ QUÉ CORRIGE
+      v0.31.0 hizo `line_allocations` obligatorio para aprobar una solicitud
+      con ítems, y cada entrada exige `line_id`. Pero ninguna ruta exponía
+      ese `line_id` ANTES de la decisión:
+
+        · La bandeja (GET /admin/credit-requests/pending) devolvía
+          PendingCreditRequest, cuyas `lines` eran CreditRequestLine — la
+          propuesta cruda del vendedor, sin identificador.
+        · CreditRequestDetail, el único schema con `line_id`, aparecía como
+          respuesta SOLO de approve, reject y cancel.
+        · No existe GET /admin/credit-requests/{request_uuid}.
+
+      O sea: para aprobar hacía falta un dato que solo llegaba como
+      resultado de aprobar. La funcionalidad principal del bloque era
+      inconstruible.
+
+      Detectado por el agente del Dashboard, que buscó `line_id` en todo el
+      archivo antes de afirmarlo y se negó a resolverlo por su cuenta. Usar
+      el índice del array habría sido plausible y silenciosamente
+      equivocado: acreditar contra la línea de factura de otro ítem es
+      exactamente el daño que la validación de cantidad busca evitar.
+
+    ★ QUÉ CAMBIA
+      `PendingCreditRequest.lines` pasa de CreditRequestLine a
+      CreditRequestDetailLine. La bandeja ahora trae `line_id`,
+      `unit_price` y `proposed_amount` — todo lo que el aprobador necesita
+      para decidir, sin una segunda llamada.
+
+    ★ POR QUÉ ASÍ Y NO DE OTRA FORMA
+      La alternativa era agregar `line_id` a CreditRequestLine. Se descartó:
+      ese schema es lo que la app de vendedores ENVÍA al crear una
+      solicitud, y llevarlo ahí sugeriría que el vendedor asigna el
+      identificador, cuando lo asigna el servidor al guardar.
+
+      La otra alternativa era un GET /admin/credit-requests/{uuid} nuevo.
+      Encaja con el modelo "la bandeja lista, el detalle se abre", pero
+      agrega superficie y un viaje extra para un dato que la bandeja ya
+      podía traer. Si más adelante hace falta refrescar una solicitud
+      suelta, se agrega entonces.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.31.1 — COMPLETA EL PAYLOAD QUE ESCRIBE EN SAP
@@ -2063,6 +2107,15 @@ paths:
         contexto delante.
 
         Lectura de solo lectura sobre el espejo de SAP. No modifica nada.
+
+        ★ FILTRA FACTURAS ANULADAS. Una factura cancelada no es un destino
+        válido para un crédito — devolver sus líneas solo daría algo que
+        elegir mal. Si la factura está anulada, responde 404 igual que si no
+        existiera.
+
+        Si el espejo de SAP no está disponible, responde 404, nunca 500: la
+        ausencia de la factura y la ausencia de la fuente se ven igual desde
+        acá, y ninguna de las dos es un error del servidor.
       parameters:
         - name: invoice_doc_num
           in: path
@@ -2143,7 +2196,11 @@ paths:
                         type: integer
                         description: >
                           El `line_id` de la línea de la solicitud, tal como
-                          viene en `CreditRequestDetail.lines`.
+                          viene en `PendingCreditRequest.lines` (la bandeja)
+                          o en `CreditRequestDetail.lines`.
+
+                          ★ v0.31.2 — la bandeja lo trae desde esta versión.
+                          Antes no, y eso hacía el endpoint inaplicable.
                       approved_amount:
                         type: number
                         format: double
@@ -6250,7 +6307,21 @@ components:
 
     PendingCreditRequest:
       type: object
-      description: Una solicitud de crédito en la bandeja, con contexto del cliente.
+      description: >
+        Una solicitud de crédito en la bandeja, con contexto del cliente.
+
+        ★ v0.31.2 — `lines` pasa a ser CreditRequestDetailLine, que trae
+        `line_id`. Antes eran CreditRequestLine (la propuesta cruda del
+        vendedor, sin identificador), y eso hacía IMPOSIBLE aprobar: el
+        aprobador necesita `line_id` para armar `line_allocations`, y el
+        único schema que lo traía —CreditRequestDetail— solo se devolvía
+        COMO RESULTADO de aprobar, rechazar o cancelar. Para aprobar hacía
+        falta un dato que solo llegaba después de aprobar.
+
+        Se resolvió acá y no agregando `line_id` a CreditRequestLine, porque
+        ese schema es lo que la app de vendedores ENVÍA al crear: llevarlo
+        ahí sugeriría que el vendedor asigna el identificador, cuando lo
+        asigna el servidor.
       properties:
         request_uuid: { type: string, format: uuid }
         client_code: { type: string }
@@ -6261,12 +6332,23 @@ components:
         lines:
           type: array
           nullable: true
-          items: { $ref: '#/components/schemas/CreditRequestLine' }
+          description: >
+            ★ v0.31.2 — con `line_id`, `unit_price` y `proposed_amount`. El
+            aprobador tiene todo lo que necesita para decidir sin una
+            segunda llamada.
+          items: { $ref: '#/components/schemas/CreditRequestDetailLine' }
         manual_amount: { type: number, format: double, nullable: true }
         calculated_amount:
           type: number
           format: double
-          description: Monto final (calculado de lines, o manual_amount).
+          description: >
+            Monto final: la suma de `proposed_amount` de las líneas, o
+            `manual_amount` en la modalidad SIN ítems.
+
+            ★ v0.31.2 — antes sumaba el total de línea completo. Ahora suma
+            lo PROPUESTO, que puede ser menor cuando el vendedor pide un
+            crédito parcial. Es el monto que el aprobador ve al abrir la
+            bandeja, antes de sus propios ajustes.
         comments: { type: string, nullable: true }
         evidence_image_url: { type: string, nullable: true }
         client_statement:
