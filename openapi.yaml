@@ -1,9 +1,35 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.30.0
+  version: 0.30.1
   description: >
     Contrato de la API del middleware Dinas WMS.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.30.1 — CORRIGE UN HUECO DE v0.30.0
+    ══════════════════════════════════════════════════════════════════════════
+
+    ★ QUÉ CORRIGE
+      v0.30.0 abrió GET /promotions a ADMIN con su query param
+      salesperson_code, pero NO hizo lo mismo con
+      GET /promotions/{promotion_id}. El detalle quedó exactamente como en
+      v0.29.0.
+
+      El efecto no era cosmético: la lista solo devuelve PromotionSummary,
+      sin condition_items ni benefit_items. Sin el detalle no se puede
+      armar el bloque de promoción, así que un ADMIN veía los títulos del
+      libro, hacía clic, y no podía agregar nada. El libro de promociones
+      quedaba inusable para él.
+
+      Detectado por el agente del Dashboard verificando contra el
+      middleware real, no leyendo el contrato:
+
+        GET /promotions?salesperson_code=18        → 200
+        GET /promotions/{id}                       → 403
+        GET /promotions/{id}?salesperson_code=18   → 403
+
+      Ahora el detalle acepta ADMIN y el mismo query param, con la misma
+      regla: obligatorio para ADMIN, ignorado para los demás.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.30.0 — ADMIN PUEDE USAR EL CARRITO DEL DASHBOARD
@@ -2576,14 +2602,36 @@ paths:
       tags: [promotions]
       summary: Detalle de una promoción (desde la perspectiva del vendedor)
       description: >
-        ★ v0.29.0 — REQUIERE VENDEDOR, ANALISTA_COMERCIAL o
-        VENDEDOR_INSTITUCIONAL. 403 si la promoción no está asignada al
-        salesperson_code del token, sin distinción de rol.
+        ★ v0.30.1 — REQUIERE VENDEDOR, ANALISTA_COMERCIAL,
+        VENDEDOR_INSTITUCIONAL o ADMIN, con el mismo query param
+        salesperson_code que GET /promotions.
+
+        Esto se omitió por error en v0.30.0: la lista se abrió a ADMIN pero
+        el detalle no, y como la lista solo devuelve PromotionSummary (sin
+        condition_items ni benefit_items), un ADMIN veía los títulos del
+        libro y no podía agregar ningún bloque al carrito. El libro quedaba
+        inusable para él.
+
+        403 si la promoción no está asignada al salesperson_code en
+        cuestión — el del token para VENDEDOR/ANALISTA_COMERCIAL/
+        VENDEDOR_INSTITUCIONAL, el del query param para ADMIN.
       parameters:
         - name: promotion_id
           in: path
           required: true
           schema: { type: string, format: uuid }
+        - name: salesperson_code
+          in: query
+          required: false
+          schema: { type: string }
+          description: >
+            ★ NUEVO en v0.30.1. SOLO para ADMIN, y OBLIGATORIO para él
+            (400 si lo omite): no tiene salesperson_code propio contra el
+            cual comprobar la asignación.
+
+            Los demás roles NO lo envían: si lo mandan se IGNORA y se usa
+            el del token. Mismo criterio que GET /promotions y
+            GET /my-orders.
       responses:
         '200':
           description: Detalle de la promoción
