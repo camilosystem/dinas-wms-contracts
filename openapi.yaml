@@ -1,9 +1,78 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.30.1
+  version: 0.31.0
   description: >
     Contrato de la API del middleware Dinas WMS.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.31.0 — NOTAS DE CRÉDITO REALES EN SAP
+    ══════════════════════════════════════════════════════════════════════════
+
+    ★ QUÉ CAMBIA
+      Aprobar una solicitud de crédito deja de llamar a un stub que simulaba
+      éxito con un doc_num falso. Ahora crea notas de crédito reales en SAP.
+
+      Y la aprobación pasa a ser una decisión con contenido: el aprobador
+      ajusta montos y elige contra qué línea de la factura va cada crédito.
+
+    ★ EL MAPEO DE MOTIVOS (verificado contra SAP, no supuesto)
+
+      Motivo          Documento  Cuenta  Almacén  Stock
+      DOESNT_WANT_IT  Ítems      4200    01       vuelve vendible
+      MISTAKE         Ítems      4200    01       vuelve vendible
+      DAMAGED         Ítems      6020    07       vuelve, NO vendible
+      SHORT           Servicio   4200    —        no vuelve nada
+
+      DAMAGED cambia deliberadamente la práctica del negocio: hoy se
+      registra como nota de SERVICIO sin ítem ni almacén, con el código del
+      artículo escrito a mano en la descripción, y el producto DESAPARECE
+      del inventario de SAP. Pasa a ser nota de ÍTEMS con el stock devuelto
+      al almacén 07 (DAMAGE) — queda registrado dónde está, sin ensuciar el
+      stock vendible.
+
+      El almacén 07 no tiene ubicaciones activadas, así que esas líneas no
+      llevan asignaciones de bin. El caso resulta ser el más simple de los
+      cuatro en payload.
+
+    ★ UNA SOLICITUD PUEDE PRODUCIR DOS DOCUMENTOS
+      Un documento de SAP es de ítems O de servicio, nunca mixto. Una
+      solicitud que mezcle líneas SHORT con líneas de otros motivos genera
+      DOS notas de crédito. Es raro —casi siempre viene un solo tipo de
+      motivo— pero el caso existe.
+
+      Si uno tiene éxito y el otro falla, EL QUE PASÓ QUEDA HECHO. No se
+      revierte. La solicitud muestra cuál falta y solo se reintenta el que
+      falló. Ver `CreditRequestSapDocument`.
+
+    ★ POR QUÉ EL APROBADOR ELIGE LA LÍNEA DE LA FACTURA
+      La nota se liga a la factura POR LÍNEA (BaseLine), no de cabecera. Y
+      no se puede deducir por `item_code`: el mismo ítem aparece repetido
+      con frecuencia, porque el esquema de promociones escribe los ítems
+      descontados en línea aparte para que el cliente vea los descuentos.
+      Cualquier heurística fallaría de forma rutinaria, no ocasional.
+
+      Por eso el aprobador ve las líneas reales
+      (GET /admin/invoices/{invoice_doc_num}/lines) y elige SIEMPRE, incluso
+      cuando no hay ambigüedad.
+
+    ★ SAP NO VALIDA EL EXCESO — el cliente debe hacerlo
+      Se verificó contra Service Layer: SAP acepta acreditar 10 unidades
+      contra una línea facturada por 1, sin error ni advertencia. Un crédito
+      de diez veces el valor vendido entra sin chistar.
+
+      El Dashboard valida que lo acreditado no exceda la línea elegida. Esa
+      protección tiene que estar donde el aprobador está mirando las líneas
+      —no después, cuando el documento ya falló, y menos aún nunca.
+
+    ★ RESUMEN DE CAMBIOS DE SUPERFICIE
+      · GET /admin/invoices/{invoice_doc_num}/lines — NUEVO
+      · POST /admin/credit-requests/{uuid}/approve — gana `line_allocations`
+      · CreditRequestLine gana `proposed_amount` (opcional, compatible)
+      · CreditRequestDetail gana `lines`, `sap_documents`, `invoice_doc_num`
+      · `sap_credit_note_doc_num` queda OBSOLETO (no alcanza con dos docs)
+      · Schemas nuevos: InvoiceLine, CreditRequestDetailLine,
+        CreditRequestSapDocument
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.30.1 — CORRIGE UN HUECO DE v0.30.0
@@ -1929,15 +1998,70 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /admin/invoices/{invoice_doc_num}/lines:
+    get:
+      tags: [admin]
+      summary: Líneas de una factura, para asignarlas a un crédito
+      description: >
+        ★ NUEVO en v0.31.0. REQUIERE rol APROBADOR_CREDITOS o ADMIN.
+
+        Devuelve las líneas de una factura de SAP con su número de línea, para
+        que el aprobador de un crédito elija contra cuál va cada línea de la
+        solicitud.
+
+        POR QUÉ EXISTE: la nota de crédito se liga a la factura POR LÍNEA
+        (BaseLine), no de cabecera. Y no se puede deducir automáticamente por
+        `item_code`, porque el mismo ítem aparece repetido con frecuencia — el
+        esquema de promociones escribe los ítems descontados en línea aparte
+        para que el cliente vea los descuentos. Cualquier heurística fallaría
+        de forma rutinaria, así que la elección la hace una persona con el
+        contexto delante.
+
+        Lectura de solo lectura sobre el espejo de SAP. No modifica nada.
+      parameters:
+        - name: invoice_doc_num
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Líneas de la factura
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invoice_doc_num: { type: string }
+                  client_code: { type: string }
+                  lines:
+                    type: array
+                    items: { $ref: '#/components/schemas/InvoiceLine' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404':
+          description: La factura no existe en SAP
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /admin/credit-requests/{request_uuid}/approve:
     post:
       tags: [admin]
       summary: Aprobar una solicitud de crédito
       description: >
-        ★ v0.17.0. REQUIERE rol APROBADOR_CREDITOS.
-        Al aprobar, dispara POST → SAP (CreditNotes). Si la solicitud es SIN
-        ítems, la cuenta G/L se resuelve automáticamente por `reason` (tabla
-        de configuración, no elegible manualmente).
+        ★ v0.31.0 — la aprobación pasa a ser una decisión con contenido, no
+        solo un visto bueno. El aprobador puede AJUSTAR el monto de cada
+        línea y DEBE asignarle una línea de la factura cuando la solicitud
+        trae `invoice_doc_num`.
+
+        La integración con SAP deja de ser un stub: al aprobar se encolan de
+        verdad una o dos notas de crédito reales (ver
+        `CreditRequestSapDocument`).
+
+        ★ v0.17.0. REQUIERE rol APROBADOR_CREDITOS (o ADMIN).
+        Si la solicitud es SIN ítems, la cuenta G/L se resuelve
+        automáticamente por `reason` (tabla de configuración, no elegible
+        manualmente).
       parameters:
         - name: request_uuid
           in: path
@@ -1951,6 +2075,64 @@ paths:
               type: object
               properties:
                 note: { type: string }
+                line_allocations:
+                  type: array
+                  nullable: true
+                  description: >
+                    ★ NUEVO en v0.31.0. La decisión del aprobador sobre cada
+                    línea de la solicitud.
+
+                    OBLIGATORIO cuando la solicitud tiene `lines` (modalidad
+                    CON ítems) — 400 si falta, o si no cubre todas las
+                    líneas, o si trae un `line_id` que no existe. No aplica a
+                    la modalidad SIN ítems.
+
+                    Cada entrada corresponde a una línea de la solicitud,
+                    identificada por su `line_id` (nunca por `item_code`, que
+                    puede repetirse).
+                  items:
+                    type: object
+                    required: [line_id, approved_amount]
+                    properties:
+                      line_id:
+                        type: integer
+                        description: >
+                          El `line_id` de la línea de la solicitud, tal como
+                          viene en `CreditRequestDetail.lines`.
+                      approved_amount:
+                        type: number
+                        format: double
+                        description: >
+                          Monto que finalmente se acredita por esta línea. El
+                          aprobador puede confirmar el `proposed_amount` del
+                          vendedor o cambiarlo. Es lo que viaja a SAP.
+                      base_line:
+                        type: integer
+                        nullable: true
+                        description: >
+                          El `line_num` de la línea de la FACTURA contra la
+                          que va este crédito, obtenido de
+                          GET /admin/invoices/{invoice_doc_num}/lines.
+
+                          OBLIGATORIO cuando la solicitud trae
+                          `invoice_doc_num` — el aprobador lo elige SIEMPRE,
+                          incluso cuando el ítem aparece una sola vez en la
+                          factura y no hay ambigüedad. Se confirma
+                          explícitamente, no se deduce.
+
+                          NULL solo cuando la solicitud no trae factura: ahí
+                          la nota va independiente, sin ligar.
+
+                          ⚠️ VALIDACIÓN QUE EL CLIENTE DEBE HACER: que la
+                          cantidad acreditada no exceda la cantidad de la
+                          línea elegida. SAP NO lo valida — se verificó
+                          contra Service Layer que acepta acreditar 10
+                          unidades contra una línea de 1, sin error ni
+                          advertencia. Sin esa validación del lado del
+                          cliente, un error de tipeo se convierte en un
+                          crédito real por varias veces el valor vendido,
+                          con stock devuelto por cantidades que nunca
+                          salieron.
       responses:
         '200':
           description: Solicitud aprobada e integrada
@@ -5857,12 +6039,36 @@ components:
 
     CreditRequestLine:
       type: object
-      description: Solo para la modalidad CON ítems.
+      description: >
+        Solo para la modalidad CON ítems.
+
+        El mismo `item_code` PUEDE aparecer en más de una línea: la factura
+        original puede tenerlo repetido (el esquema de promociones escribe
+        los ítems descontados en línea aparte), y el cliente puede devolver
+        de ambas. Por eso las líneas se identifican por `line_id` en el
+        detalle, nunca por `item_code`.
       required: [item_code, quantity, reason]
       properties:
         item_code: { type: string }
         quantity: { type: number, format: double }
         reason: { $ref: '#/components/schemas/CreditRequestReason' }
+        proposed_amount:
+          type: number
+          format: double
+          nullable: true
+          description: >
+            ★ NUEVO en v0.31.0. Monto que el vendedor PROPONE acreditar por
+            esta línea, para créditos parciales (acreditar el 20% de una
+            línea, no la línea entera — es común).
+
+            Si se omite, el servidor calcula `quantity` × el último precio
+            facturado al cliente para ese ítem, que es el comportamiento
+            anterior. Los clientes que no lo envíen siguen funcionando
+            igual.
+
+            El aprobador puede AJUSTARLO al aprobar (ver
+            `line_allocations` en el endpoint de aprobación). Lo que se
+            manda a SAP es el monto aprobado, no el propuesto.
 
     CreditRequestCreate:
       type: object
@@ -5930,6 +6136,105 @@ components:
             contexto completo del cliente para decidir sin salir de la bandeja.
         received_at: { type: string, format: date-time }
 
+    InvoiceLine:
+      type: object
+      description: >
+        ★ NUEVO en v0.31.0. Una línea de una factura de SAP, como la ve el
+        aprobador de créditos al elegir contra cuál línea va cada crédito.
+      properties:
+        line_num:
+          type: integer
+          description: >
+            Número de línea DENTRO de la factura, tal como lo tiene SAP. Es
+            el valor que viaja a SAP como `BaseLine` al crear la nota de
+            crédito, así que debe usarse tal cual — no reindexar ni asumir
+            que empieza en 1.
+          example: 2
+        item_code: { type: string }
+        item_name: { type: string, nullable: true }
+        quantity:
+          type: number
+          format: double
+          description: Cantidad facturada en esta línea.
+        unit_price: { type: number, format: double }
+        line_total: { type: number, format: double }
+
+    CreditRequestDetailLine:
+      type: object
+      description: >
+        ★ NUEVO en v0.31.0. Una línea de la solicitud tal como la ve el
+        aprobador, con el identificador estable que necesita para asignarle
+        una línea de la factura.
+      properties:
+        line_id:
+          type: integer
+          description: >
+            Identificador de la línea DENTRO de esta solicitud, asignado por
+            el servidor al guardarla. Estable e inmutable.
+
+            Existe porque `item_code` no sirve para identificar una línea:
+            puede repetirse dentro de la misma solicitud. Toda referencia a
+            una línea —en particular `line_allocations` al aprobar— usa este
+            campo.
+          example: 1
+        item_code: { type: string }
+        item_name: { type: string, nullable: true }
+        quantity: { type: number, format: double }
+        reason: { $ref: '#/components/schemas/CreditRequestReason' }
+        unit_price:
+          type: number
+          format: double
+          nullable: true
+          description: >
+            Último precio facturado al cliente para ese ítem, resuelto
+            server-side. Es referencia para el aprobador, no lo que se
+            acredita.
+        proposed_amount:
+          type: number
+          format: double
+          description: >
+            Lo que el vendedor propuso acreditar. Si no lo envió, el
+            servidor lo calculó como `quantity` × `unit_price`.
+
+    CreditRequestSapDocument:
+      type: object
+      description: >
+        ★ NUEVO en v0.31.0. Un documento de SAP generado por esta solicitud.
+
+        Una solicitud puede producir DOS documentos, porque los motivos
+        mapean a tipos distintos y un documento de SAP es de ítems O de
+        servicio, nunca mixto:
+
+          · Nota de ÍTEMS   — líneas DOESNT_WANT_IT, MISTAKE, DAMAGED
+          · Nota de SERVICIO — líneas SHORT
+
+        En la práctica es raro que una solicitud mezcle ambos: casi siempre
+        viene un solo tipo de motivo y se genera un solo documento. Pero el
+        caso existe y el modelo lo contempla.
+
+        Cada documento se integra por separado. Si uno tiene éxito y el otro
+        falla, EL QUE PASÓ QUEDA HECHO — no se revierte. La solicitud
+        muestra cuál falta y solo se reintenta el que falló.
+      properties:
+        doc_kind:
+          type: string
+          enum: [ITEMS, SERVICE]
+          description: >
+            ITEMS  — devuelve mercancía al inventario (motivos
+                     DOESNT_WANT_IT, MISTAKE, DAMAGED).
+            SERVICE — solo ajusta valor, no toca inventario (motivo SHORT).
+        status: { $ref: '#/components/schemas/ApprovalStatus' }
+        sap_doc_num:
+          type: string
+          nullable: true
+          description: DocNum en SAP. NULL mientras no se haya integrado.
+        error_message:
+          type: string
+          nullable: true
+          description: >
+            Motivo del fallo si `status` es ERROR_INTEGRACION. NULL en
+            cualquier otro caso.
+
     CreditRequestDetail:
       type: object
       properties:
@@ -5947,7 +6252,36 @@ components:
         decided_by: { type: string, nullable: true }
         decided_at: { type: string, format: date-time, nullable: true }
         decision_note: { type: string, nullable: true }
-        sap_credit_note_doc_num: { type: string, nullable: true }
+        invoice_doc_num:
+          type: string
+          nullable: true
+          description: >
+            ★ v0.31.0 — factura sobre la que aplica, si la solicitud la trae.
+            Cuando está presente, el aprobador DEBE asignar una línea de esa
+            factura a cada línea del crédito (ver `line_allocations`).
+            Cuando es NULL, las notas van independientes, sin ligar.
+        lines:
+          type: array
+          nullable: true
+          description: >
+            ★ NUEVO en v0.31.0. Las líneas de la solicitud, con su `line_id`.
+            NULL en la modalidad SIN ítems.
+          items: { $ref: '#/components/schemas/CreditRequestDetailLine' }
+        sap_documents:
+          type: array
+          description: >
+            ★ NUEVO en v0.31.0. Los documentos de SAP que genera esta
+            solicitud — uno normalmente, dos si mezcla motivos de ítems con
+            SHORT. Vacío mientras no se haya aprobado.
+          items: { $ref: '#/components/schemas/CreditRequestSapDocument' }
+        sap_credit_note_doc_num:
+          type: string
+          nullable: true
+          description: >
+            OBSOLETO desde v0.31.0 — se mantiene por compatibilidad. Trae el
+            `sap_doc_num` del documento de ÍTEMS si existe, si no el del de
+            servicio. Cuando hay dos documentos este campo no alcanza:
+            usar `sap_documents`.
 
     OrderStatus:
       type: string
