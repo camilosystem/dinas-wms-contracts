@@ -1,9 +1,74 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.31.2
+  version: 0.32.0
   description: >
     Contrato de la API del middleware Dinas WMS.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.32.0 — LO QUE SALIÓ DE LA PRIMERA NOTA REAL
+    ══════════════════════════════════════════════════════════════════════════
+
+    Siete cambios, todos surgidos de construir e integrar el bloque de
+    notas de crédito contra SAP real. Se acumularon a propósito para
+    publicarlos en una sola ronda.
+
+    ★ 1. DAMAGED pasa de la cuenta 6020 a la 4700
+      La 6020 (Damaged Merchandise) es de tipo `at_Other`, y SAP EXIGE una
+      cuenta de tipo INGRESO en las líneas de una nota de ítems. Rechazó el
+      documento con -5002.
+
+      Un BORRADOR sí aceptaba 6020, porque no corre la validación de
+      determinación de cuentas. De ahí salió un falso positivo en el
+      descubrimiento: se dio por verificado algo que solo era cierto para
+      borradores.
+
+      LECCIÓN, que vale más que el cambio: para cualquier cosa que toque
+      cuentas contables, un borrador NO es evidencia suficiente. Sigue
+      sirviendo para forma del payload, vínculos, precios y cantidades.
+
+      Contabilidad creó la 4700 (Returns Damaged) para esto: `at_Revenues`,
+      activa, nivel 3 bajo Net Sales, sin cuentas hijas. Conserva la
+      separación contable Y deja que el stock vuelva al almacén 07.
+
+    ★ 2. `SapCreditNoteLine` gana `reason`, SOLO para verificar
+      La regla "un documento SERVICE solo lleva líneas SHORT" no era
+      verificable desde el sincronizador: cuando le llega la tarea el split
+      ya está hecho. Y el error habría sido CONSISTENTE — una línea DAMAGED
+      mal ubicada vendría con 4200 y sin almacén, indistinguible de un
+      SHORT legítimo.
+
+      El sincronizador NO deriva cuenta ni almacén de este campo. Solo
+      comprueba coherencia y se niega a postear si no cuadra.
+
+    ★ 3. `base_line` deja de exigirse en líneas SHORT
+      Esas van a un documento de servicio, que no se puede ligar a una
+      factura. Se le estaba pidiendo al aprobador una decisión que después
+      se descartaba.
+
+    ★ 4. Queda definido el payload de la modalidad SIN_ITEMS
+      Nota de servicio con una sola línea, contra `gl_account_code`, con el
+      `manual_amount` en `UnitPrice` y cantidad 1 — porque en servicio la
+      cantidad no multiplica. Descripción: nombre del cliente + motivo.
+
+    ★ 5. `sap_reference` viaja en el DTO de la tarea del sincronizador
+      El campo existía y no se devolvía. Sin él, quien escribe reporta un
+      número y no puede comprobar que aterrizó.
+
+    ★ 6. `error_detail` ya no se limpia al reintentar
+      Persiste como el error del último intento fallido. Antes, una tarea
+      reintentada quedaba con `attempts: 1` y ningún rastro del porqué.
+
+    ★ 7. GET /admin/credit-requests/{request_uuid} — NUEVO
+      `CreditRequestDetail` solo se devolvía como respuesta de approve,
+      reject o cancel. Una vez decidida, la solicitud salía de la bandeja y
+      no había forma de volver a leerla — quedando inalcanzable
+      `sap_documents`, que es justamente lo que cambia DESPUÉS de aprobar.
+
+      Es el hueco de `line_id` de v0.31.0 en su otra mitad: entonces
+      faltaba leer antes de decidir, ahora faltaba leer después. Se
+      descartó este endpoint en v0.31.2 con un argumento que valía solo
+      para el estado pendiente.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.31.2 — line_id OBTENIBLE ANTES DE APROBAR
@@ -93,6 +158,8 @@ info:
       gl_account_code de cabecera queda en NULL para CON_ITEMS, porque desde
       v0.31.0 la cuenta puede DIFERIR ENTRE LÍNEAS de una misma nota —
       DAMAGED usa 6020 mientras el resto usa 4200. Por eso va por línea.
+      (⚠️ La cuenta de DAMAGED cambió a 4700 en v0.32.0 — SAP rechaza la
+      6020 en líneas de ítems. El resto del párrafo sigue vigente.)
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.31.0 — NOTAS DE CRÉDITO REALES EN SAP
@@ -111,6 +178,9 @@ info:
       DOESNT_WANT_IT  Ítems      4200    01       vuelve vendible
       MISTAKE         Ítems      4200    01       vuelve vendible
       DAMAGED         Ítems      6020    07       vuelve, NO vendible
+                                  ↑ ⚠️ OBSOLETO: cambió a 4700 en v0.32.0.
+                                    SAP rechaza la 6020 en líneas de ítems
+                                    porque no es cuenta de tipo ingreso.
       SHORT           Servicio   4200    —        no vuelve nada
 
       DAMAGED cambia deliberadamente la práctica del negocio: hoy se
@@ -2142,6 +2212,44 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
 
+  /admin/credit-requests/{request_uuid}:
+    get:
+      tags: [admin]
+      summary: Detalle de una solicitud de crédito, decidida o no
+      description: >
+        ★ NUEVO en v0.32.0. REQUIERE rol APROBADOR_CREDITOS o ADMIN.
+
+        POR QUÉ EXISTE: hasta v0.31.2, `CreditRequestDetail` solo se
+        devolvía como RESPUESTA de approve, reject o cancel — o sea en el
+        instante de decidir. Una vez aprobada, la solicitud desaparecía de
+        la bandeja (que por definición solo lista pendientes) y no había
+        forma de volver a leerla.
+
+        Eso dejaba inalcanzable justo el campo que CAMBIA después de
+        aprobar: `sap_documents`, donde aparecen los DocNum de las notas
+        creadas y los errores de integración. Sin este endpoint, el
+        Dashboard no puede mostrar en qué quedó una solicitud ni ofrecer el
+        reintento del documento que falló — que es medio punto del modelo
+        de dos documentos.
+
+        Es el mismo hueco que tuvo `line_id` en v0.31.0, en su otra mitad:
+        entonces faltaba poder leer ANTES de decidir, y se resolvió cargando
+        la bandeja. Acá falta leer DESPUÉS, y la bandeja no sirve.
+      parameters:
+        - name: request_uuid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: La solicitud, en cualquier estado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreditRequestDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /admin/credit-requests/{request_uuid}/approve:
     post:
       tags: [admin]
@@ -2217,13 +2325,24 @@ paths:
                           GET /admin/invoices/{invoice_doc_num}/lines.
 
                           OBLIGATORIO cuando la solicitud trae
-                          `invoice_doc_num` — el aprobador lo elige SIEMPRE,
+                          `invoice_doc_num` **y la línea va a un documento
+                          de ÍTEMS** (motivos DOESNT_WANT_IT, MISTAKE o
+                          DAMAGED). Ahí el aprobador lo elige SIEMPRE,
                           incluso cuando el ítem aparece una sola vez en la
-                          factura y no hay ambigüedad. Se confirma
+                          factura y no hay ambigüedad — se confirma
                           explícitamente, no se deduce.
 
-                          NULL solo cuando la solicitud no trae factura: ahí
-                          la nota va independiente, sin ligar.
+                          ★ v0.32.0 — NO se exige para líneas SHORT, aunque
+                          la solicitud traiga factura. Esas van a un
+                          documento de SERVICIO, y una línea de servicio no
+                          se puede ligar a una factura: SAP la deja en
+                          `BaseType -1`. Pedirle al aprobador que elija una
+                          línea que después se descarta era pedirle una
+                          decisión sin consecuencia, y difícil de explicar
+                          en la interfaz.
+
+                          NULL también cuando la solicitud no trae factura:
+                          ahí la nota va independiente, sin ligar.
 
                           ⚠️ VALIDACIÓN QUE EL CLIENTE DEBE HACER: que la
                           cantidad acreditada no exceda la cantidad de la
@@ -5637,11 +5756,27 @@ components:
         account_code:
           type: string
           description: >
-            Cuenta contable ya resuelta por motivo (4200 para
-            DOESNT_WANT_IT/MISTAKE/SHORT, 6020 para DAMAGED). El
-            sincronizador la manda tal cual; se verificó contra Service
-            Layer que SAP la respeta y no la pisa con la del artículo, ni
-            siquiera cuando la línea va ligada a una factura.
+            Cuenta contable ya resuelta por motivo: **4200** (Sales Returns
+            and Allowances) para DOESNT_WANT_IT, MISTAKE y SHORT; **4700**
+            (Returns Damaged) para DAMAGED.
+
+            ★ v0.32.0 — DAMAGED pasa de 6020 a 4700. La 6020 (Damaged
+            Merchandise) es de tipo `at_Other`, y SAP EXIGE una cuenta de
+            tipo INGRESO en las líneas de una nota de ítems: rechaza el
+            documento con error -5002 ("choose sales-type revenue account
+            [INV1.AcctCode]"). Un borrador SÍ acepta 6020 porque no corre la
+            validación de determinación de cuentas — por eso el
+            descubrimiento inicial dio un falso positivo.
+
+            La 4700 la creó contabilidad para esto: `at_Revenues`, activa,
+            nivel 3 bajo Net Sales (40), junto a las demás cuentas de ajuste
+            de venta, y sin cuentas hijas (o sea imputable). Conserva la
+            separación contable de las devoluciones dañadas y permite que el
+            stock vuelva al almacén 07.
+
+            El sincronizador la manda tal cual; se verificó que SAP no la
+            pisa con la del artículo, ni siquiera cuando la línea va ligada
+            a una factura.
         warehouse_code:
           type: string
           nullable: true
@@ -5655,6 +5790,29 @@ components:
 
             El 07 no tiene ubicaciones activadas, así que sus líneas NO
             llevan asignaciones de bin — a diferencia del 01.
+        reason:
+          $ref: '#/components/schemas/CreditRequestReason'
+          description: >
+            ★ NUEVO en v0.32.0. El motivo de ESTA línea (no el de cabecera
+            de la solicitud, que puede diferir cuando la solicitud mezcla
+            motivos).
+
+            ⚠️ ES SOLO PARA VERIFICAR, NUNCA PARA DECIDIR. El sincronizador
+            NO deriva de acá la cuenta ni el almacén — esos vienen ya
+            resueltos en `account_code` y `warehouse_code`. Lo único que
+            hace con este campo es comprobar coherencia y NEGARSE A POSTEAR
+            si no cuadra.
+
+            Existe porque sin él la regla "un documento SERVICE solo lleva
+            líneas SHORT" no es verificable desde el sincronizador: cuando
+            le llega la tarea el split ya está hecho. Y el error sería
+            CONSISTENTE — si el middleware metiera una línea DAMAGED en un
+            documento SERVICE, también le resolvería 4200 sin almacén,
+            porque resuelve todo del mismo motivo mal leído. Sin `reason`
+            no hay contradicción que detectar.
+
+            Coherencia esperada: en un documento ITEMS las líneas son
+            DOESNT_WANT_IT, MISTAKE o DAMAGED; en uno SERVICE, solo SHORT.
         base_line:
           type: integer
           nullable: true
@@ -5705,7 +5863,34 @@ components:
         status: { $ref: '#/components/schemas/SapIntegrationTaskStatus' }
         forced: { type: boolean }
         attempts: { type: integer }
-        error_detail: { type: string, nullable: true }
+        sap_reference:
+          type: string
+          nullable: true
+          description: >
+            ★ NUEVO en v0.32.0. El identificador que el sincronizador
+            reportó al integrar — el DocNum de la nota de crédito en SAP.
+            NULL mientras no se haya integrado.
+
+            El campo ya existía del lado del middleware; simplemente no se
+            devolvía. Sin él, el sincronizador reporta un número y no puede
+            comprobar que aterrizó: solo sabe que su llamada no dio error.
+            Mismo principio que se aplica en todo el proyecto — que quien
+            escribe pueda verificar lo que quedó.
+        error_detail:
+          type: string
+          nullable: true
+          description: >
+            Motivo del último intento FALLIDO.
+
+            ★ v0.32.0 — NO se limpia al reintentar. Persiste como "el error
+            del último intento que falló", así que una tarea en PENDIENTE
+            con `attempts > 0` y este campo poblado cuenta la historia
+            completa: falló antes, se va a reintentar, y esto fue lo que
+            pasó.
+
+            Limpiarlo al reintentar borraba justamente lo que hace falta
+            para entender por qué la tarea está donde está — quedaba una
+            tarea con `attempts: 1` y ningún rastro del porqué.
         created_at: { type: string, format: date-time }
         last_attempt_at: { type: string, format: date-time, nullable: true }
         credit_request:
@@ -5736,7 +5921,22 @@ components:
                 Resuelto al aprobar (SIN_ITEMS). En CON_ITEMS es NULL: la
                 cuenta va por línea en `account_code`, porque desde v0.31.0
                 puede diferir entre líneas de una misma nota (DAMAGED usa
-                6020 mientras el resto usa 4200).
+                4700 mientras el resto usa 4200).
+
+                ★ v0.32.0 — CÓMO CONSTRUIR LA NOTA EN LA MODALIDAD
+                SIN_ITEMS, que hasta ahora no estaba definida:
+
+                Nota de SERVICIO (`dDocument_Service`) con UNA SOLA línea:
+
+                  · `AccountCode` = este `gl_account_code`
+                  · `UnitPrice` = `manual_amount`, con `Quantity` = 1.
+                    OJO: en una línea de servicio la cantidad NO
+                    MULTIPLICA — el LineTotal es el precio. Poner la
+                    cantidad real acreditaría de menos.
+                  · `ItemDescription` = nombre del cliente + motivo
+                  · SIN ligar a factura, aunque la solicitud traiga
+                    `invoice_doc_num`: una línea de servicio no se puede
+                    ligar.
             lines:
               type: array
               nullable: true
