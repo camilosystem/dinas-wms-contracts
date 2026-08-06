@@ -1,9 +1,54 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.31.0
+  version: 0.31.1
   description: >
     Contrato de la API del middleware Dinas WMS.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.31.1 — COMPLETA EL PAYLOAD QUE ESCRIBE EN SAP
+    ══════════════════════════════════════════════════════════════════════════
+
+    ★ QUÉ CORRIGE
+      v0.31.0 definió el lado de LECTURA del modelo de dos documentos
+      (CreditRequestSapDocument, expuesto en CreditRequestDetail) pero dejó
+      SapCreditRequestSyncTask exactamente como estaba en v0.18.0 — y eso es
+      lo que el sincronizador consume para ESCRIBIR en SAP.
+
+      Con ese payload el sincronizador no podía saber cuál de las dos tareas
+      era cuál (comparten document_uuid y todo lo demás), cuánto acreditar
+      (llegaba proposed_amount, la propuesta del vendedor, no
+      approved_amount), contra qué línea ligar (base_line no viajaba, y es
+      la razón de ser del endpoint nuevo), ni qué cuenta y almacén usar (la
+      tabla de mapeo vivía solo en la prosa del changelog).
+
+      Detectado por el agente de middleware antes de escribir una línea de
+      código, contando ocurrencias de cada campo en todo el archivo en vez
+      de leer por encima. Su criterio fue el correcto: emitir campos que el
+      contrato no declara, en la interfaz entre dos programas, es
+      exactamente lo que el repo de un solo escritor viene a evitar.
+
+    ★ QUÉ AGREGA
+      · SapCreditRequestSyncTask gana `doc_kind` (ITEMS | SERVICE) — sin él
+        las dos tareas de una misma solicitud son indistinguibles.
+      · `lines` pasa de CreditRequestLine (la propuesta del vendedor) a
+        SapCreditNoteLine (la decisión resuelta).
+      · SapCreditNoteLine — schema nuevo: item_code, quantity,
+        approved_amount, account_code, warehouse_code, base_line.
+
+    ★ QUIÉN RESUELVE QUÉ
+      El MIDDLEWARE resuelve cuenta y almacén por motivo, y se los entrega
+      resueltos al sincronizador. Encaja con lo que ya existe:
+      CreditReasonGLAccount ya resolvía el G/L por motivo para SIN_ITEMS, y
+      el contrato ya exponía gl_account_code.
+
+      El sincronizador no consulta tablas de motivos ni deduce nada: si un
+      campo no está en el payload, no debe inventarlo. Es capa de
+      traducción, no de reglas de negocio.
+
+      gl_account_code de cabecera queda en NULL para CON_ITEMS, porque desde
+      v0.31.0 la cuenta puede DIFERIR ENTRE LÍNEAS de una misma nota —
+      DAMAGED usa 6020 mientras el resto usa 4200. Por eso va por línea.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.31.0 — NOTAS DE CRÉDITO REALES EN SAP
@@ -5512,12 +5557,94 @@ components:
             decided_by: { type: string }
             decided_at: { type: string, format: date-time }
 
+    SapCreditNoteLine:
+      type: object
+      description: >
+        ★ NUEVO en v0.31.1. Una línea de la nota de crédito, ya RESUELTA por
+        el middleware — el sincronizador la traduce a Service Layer sin
+        decidir nada.
+
+        Todo lo que aquí viene ya pasó por el aprobador o por la
+        configuración del middleware. El sincronizador no consulta tablas de
+        motivos ni deduce cuentas: si un campo no está acá, no debe
+        inventarlo.
+      properties:
+        item_code: { type: string }
+        quantity: { type: number, format: double }
+        approved_amount:
+          type: number
+          format: double
+          description: >
+            El monto que el aprobador aprobó para esta línea — NO el que
+            propuso el vendedor. Es lo que se acredita.
+        account_code:
+          type: string
+          description: >
+            Cuenta contable ya resuelta por motivo (4200 para
+            DOESNT_WANT_IT/MISTAKE/SHORT, 6020 para DAMAGED). El
+            sincronizador la manda tal cual; se verificó contra Service
+            Layer que SAP la respeta y no la pisa con la del artículo, ni
+            siquiera cuando la línea va ligada a una factura.
+        warehouse_code:
+          type: string
+          nullable: true
+          description: >
+            Almacén destino, ya resuelto por motivo: 01 para
+            DOESNT_WANT_IT/MISTAKE (vuelve como stock vendible), 07 (DAMAGE)
+            para DAMAGED (vuelve pero fuera del stock vendible).
+
+            NULL en las líneas de una nota de SERVICIO, que no tocan
+            inventario.
+
+            El 07 no tiene ubicaciones activadas, así que sus líneas NO
+            llevan asignaciones de bin — a diferencia del 01.
+        base_line:
+          type: integer
+          nullable: true
+          description: >
+            El `line_num` de la línea de la FACTURA original contra la que
+            va este crédito. Viaja a Service Layer como `BaseLine`, junto
+            con `BaseType 13` y el `BaseEntry` que el sincronizador resuelve
+            localmente desde `invoice_doc_num`.
+
+            Lo ELIGIÓ EL APROBADOR, línea por línea. No se deduce ni se
+            recalcula: el mismo `item_code` puede aparecer repetido en la
+            factura (el esquema de promociones escribe los ítems descontados
+            en línea aparte), así que cualquier intento de inferirlo
+            fallaría de forma rutinaria.
+
+            Empieza en 0, tal como lo tiene SAP. No reindexar.
+
+            NULL cuando la solicitud no trae factura: la nota va
+            independiente.
+
     SapCreditRequestSyncTask:
       type: object
-      description: ★ v0.18.0. Igual que SapAccountPaymentSyncTask, para créditos.
+      description: >
+        ★ v0.31.1 — el snapshot pasa a traer la DECISIÓN del aprobador, no
+        la propuesta del vendedor, y a identificar cuál de los dos posibles
+        documentos es esta tarea.
+
+        ★ v0.18.0. Igual que SapAccountPaymentSyncTask, para créditos.
       properties:
         task_id: { type: integer }
         document_uuid: { type: string, format: uuid, description: "= request_uuid" }
+        doc_kind:
+          type: string
+          enum: [ITEMS, SERVICE]
+          description: >
+            ★ NUEVO en v0.31.1. Qué documento debe crear ESTA tarea.
+
+            Una solicitud puede generar dos: una nota de ÍTEMS con las
+            líneas DOESNT_WANT_IT/MISTAKE/DAMAGED, y una de SERVICIO con las
+            SHORT. Un documento de SAP es de un tipo o del otro, nunca
+            mixto.
+
+            Sin este campo las dos tareas de una misma solicitud serían
+            indistinguibles: comparten `document_uuid` y todo lo demás.
+
+            Cada una se integra y se reintenta por separado. Si una tiene
+            éxito y la otra falla, la que pasó queda hecha.
         status: { $ref: '#/components/schemas/SapIntegrationTaskStatus' }
         forced: { type: boolean }
         attempts: { type: integer }
@@ -5527,8 +5654,14 @@ components:
         credit_request:
           type: object
           description: >
-            Snapshot del CreditRequest ya APROBADO. Para SIN_ITEMS incluye
-            gl_account_code ya resuelto (nunca lo elige el sincronizador).
+            Snapshot del CreditRequest ya APROBADO, filtrado a las líneas que
+            corresponden al `doc_kind` de esta tarea.
+
+            ★ v0.31.1 — `lines` pasa a ser SapCreditNoteLine (la decisión
+            resuelta) en vez de CreditRequestLine (la propuesta del
+            vendedor). El sincronizador no necesita consultar el motivo para
+            nada: cuenta, almacén, monto y línea base vienen resueltos.
+
             La modalidad NO es un campo propio — se infiere igual que en el
             resto del contrato: `lines` presente + `manual_amount` null =
             CON_ITEMS; `manual_amount` presente + `lines` null = SIN_ITEMS.
@@ -5542,11 +5675,18 @@ components:
             gl_account_code:
               type: string
               nullable: true
-              description: Resuelto al aprobar (SIN_ITEMS). Null en CON_ITEMS (SAP resuelve por línea).
+              description: >
+                Resuelto al aprobar (SIN_ITEMS). En CON_ITEMS es NULL: la
+                cuenta va por línea en `account_code`, porque desde v0.31.0
+                puede diferir entre líneas de una misma nota (DAMAGED usa
+                6020 mientras el resto usa 4200).
             lines:
               type: array
               nullable: true
-              items: { $ref: '#/components/schemas/CreditRequestLine' }
+              description: >
+                Solo las líneas que corresponden al `doc_kind` de esta
+                tarea, ya resueltas.
+              items: { $ref: '#/components/schemas/SapCreditNoteLine' }
             decided_by: { type: string }
             decided_at: { type: string, format: date-time }
 
