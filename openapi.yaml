@@ -1,9 +1,104 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.33.0
+  version: 0.33.3
   description: >
     Contrato de la API del middleware Dinas WMS.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.33.3 — NO SE ACREDITA LO QUE NUNCA SE VENDIÓ
+    ══════════════════════════════════════════════════════════════════════════
+
+    Incluye todo lo de v0.33.2.
+
+    ★ `POST /credit-requests` rechaza con 400
+      (code=`item_never_invoiced_to_client`) si algún ítem de las líneas
+      nunca se le facturó a ese cliente.
+
+      Rechaza aunque la línea traiga `proposed_amount`: el problema no es
+      que falte el cálculo, es que la solicitud no es legítima.
+
+    ★ CÓMO APARECIÓ
+      Probando el monto propuesto de la app de vendedores en vivo, se creó
+      una solicitud con dos líneas de ítems que ese cliente nunca había
+      comprado. Resultado:
+
+        línea escrita por el vendedor  → proposed_amount 10.00  ✅
+        línea sin tocar                → proposed_amount  0.00  ⚠️
+
+      La segunda debía traer el cálculo del servidor. Trajo cero, porque
+      `unit_price` era null —no había factura previa de ese cliente+ítem—
+      y el cálculo hizo `cantidad × null` → 0.
+
+      El `calculated_amount` de la cabecera sumó ese cero sin señal alguna.
+      Una solicitud de crédito por un ítem jamás vendido a ese cliente
+      valía 0, y el aprobador podía aprobarla tal cual.
+
+      Contradecía la semántica ya declarada: `unit_price: null` significa
+      "no se pudo resolver", no "vale cero". El cálculo la ignoraba.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.33.2 — QUÉ SIGNIFICA salesperson_code EN UNA SOLICITUD
+    ══════════════════════════════════════════════════════════════════════════
+
+    Incluye todo lo de v0.33.1, que nunca llegó a publicarse.
+
+    ★ 1. `POST /credit-requests` acepta VENDEDOR, VENDEDOR_INSTITUCIONAL,
+      ADMIN y APROBADOR_CREDITOS
+      Nunca había declarado rol y la implementación aceptaba solo a
+      VENDEDOR, así que la oficina —que entra como ADMIN o
+      APROBADOR_CREDITOS— no podía crear el crédito desde la devolución del
+      driver, que es el punto de v0.33.0. Residuo de v0.17.0, igual que el
+      403 de `reject` corregido en v0.32.2.
+
+    ★ 2. `salesperson_code` se resuelve DESDE EL CLIENTE
+      Antes salía del token, así que significaba "quién presentó la
+      solicitud". Eso producía atribución cruzada REAL, medida sobre datos
+      existentes: solicitudes de clientes de los vendedores 8 y 14
+      guardadas a nombre del 11, simplemente porque las cargó él.
+
+      Nunca hubo validación de propiedad — `ExistsWithValidSalespersonAsync`
+      comprueba que el cliente tenga UN vendedor real, no que sea el del
+      que llama.
+
+      Además, abrir el endpoint sin este cambio no habría dado una
+      solicitud sin dueño: habría dado 500, porque el método que lee el
+      código del token LANZA si el claim falta. Peor que el 403 que
+      reemplaza.
+
+    ★ 3. `CreditRequest` gana `created_by`
+      Quien la cargó, distinto de a quién pertenece. Mismo par de conceptos
+      que OrderSummary desde v0.30.0, y por la misma razón: un documento
+      pertenece a un vendedor y lo puede haber cargado otro.
+
+      NULL en solicitudes anteriores — la columna nace vacía.
+
+    ★ CONSIDERACIÓN DE MIGRACIÓN
+      Las solicitudes existentes tienen `salesperson_code` con el
+      significado VIEJO (quién la cargó), que no coincide con el dueño del
+      cliente. Decidir si se corrigen o se dejan como están es parte de la
+      implementación — corregirlas cambia atribución histórica, dejarlas
+      mezcla dos significados en la misma columna. Reportar cuál se eligió.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.33.1 — (nunca publicada, incluida en v0.33.2)
+    ══════════════════════════════════════════════════════════════════════════
+
+      `POST /credit-requests` pasa a aceptar VENDEDOR,
+      VENDEDOR_INSTITUCIONAL, ADMIN y APROBADOR_CREDITOS.
+
+      Nunca había declarado rol, y la implementación aceptaba solo a
+      VENDEDOR. Eso dejaba el vínculo de v0.33.0 sin poder usarse: la
+      oficina entra al Dashboard como ADMIN o APROBADOR_CREDITOS, así que
+      podía ver la devolución del driver y no podía crear el crédito.
+
+      Lo midió el agente del Dashboard con body vacío —un rol permitido da
+      400 por campos faltantes, uno denegado da 403— y solo `vendedor1`
+      llegó al 400.
+
+      Mismo caso que el 403 de `reject` corregido en v0.32.2: residuo de
+      v0.17.0, no diseño. Que el contrato no declarara rol para este
+      endpoint era la pista.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.33.0 — LA DEVOLUCIÓN DE RUTA PRECARGA LA SOLICITUD
@@ -2096,6 +2191,59 @@ paths:
       tags: [account-payments]
       summary: Solicitar una Nota de Crédito
       description: >
+        ★ v0.33.1 — REQUIERE rol VENDEDOR, VENDEDOR_INSTITUCIONAL, ADMIN o
+        APROBADOR_CREDITOS.
+
+        Este endpoint NUNCA había declarado rol, y la implementación
+        aceptaba SOLO a VENDEDOR — los otros tres recibían 403. Eso hacía
+        imposible que la oficina creara una solicitud desde el Dashboard,
+        que es justamente el punto del vínculo con las devoluciones de ruta
+        introducido en v0.33.0: el driver captura en ruta y alguien en
+        oficina crea el crédito a partir de eso.
+
+        Mismo caso que el 403 de `reject` corregido en v0.32.2: residuo de
+        v0.17.0, no diseño.
+
+        ★ v0.33.2 — `salesperson_code` se resuelve DESDE EL CLIENTE, no
+        desde el token. Eso es lo que hace posible abrir el endpoint: un
+        ADMIN o un APROBADOR_CREDITOS no tienen código propio, y el método
+        que lo leía del token LANZA si el claim falta — abrirlo sin este
+        cambio habría dado 500, peor que el 403 que reemplaza.
+
+        Y quien la carga queda en `created_by`, igual que en los pedidos
+        desde v0.30.0. Ver ambos campos en CreditRequestDetail.
+
+        ★ v0.33.3 — RECHAZA (400, code=`item_never_invoiced_to_client`) si
+        algún `item_code` de las líneas nunca se le facturó a ese cliente.
+
+        No se puede acreditar algo que el cliente nunca compró. Rechaza
+        AUNQUE la línea traiga `proposed_amount`: el problema no es que
+        falte el cálculo, es que la solicitud no es legítima.
+
+        El error nombra el `item_code` en cuestión, para que el vendedor
+        sepa cuál corregir sin adivinar.
+
+        QUÉ LO REVELÓ: antes, cuando el último precio facturado no se podía
+        resolver, `unit_price` quedaba en null y el cálculo hacía
+        `cantidad × null` → **0**. La solicitud se creaba con monto 0 y
+        nada lo indicaba — el `calculated_amount` de la cabecera sumaba ese
+        0 en silencio, y el aprobador veía un cero que podía aprobar tal
+        cual.
+
+        Eso contradecía la semántica declarada: `unit_price: null` significa
+        "no se pudo resolver", NO "vale cero".
+
+        ⚠️ CONSECUENCIA A TENER PRESENTE: si una devolución REAL trae un ítem
+        que no se le facturó a ese cliente —código cambiado, vendido bajo
+        otro código de cliente, entregado fuera del flujo normal—, la
+        solicitud CON ítems queda rechazada y la única salida es una SIN
+        ítems con monto manual.
+
+        Y esa genera una nota de SERVICIO, que **no devuelve stock**. O sea
+        que la plata se acredita igual, pero la mercancía que volvió
+        físicamente no reingresa al inventario por esa vía. Es el costo
+        aceptado de no permitir créditos sin respaldo de venta.
+
         ★ v0.17.0. Dos modalidades: CON ítems (monto calculado de las líneas)
         o SIN ítems (monto manual + razón, que determina la cuenta G/L).
         Idempotente por `request_uuid`.
@@ -6875,6 +7023,12 @@ components:
             Último precio facturado al cliente para ese ítem, resuelto
             server-side. Es referencia para el aprobador, no lo que se
             acredita.
+
+            ★ v0.33.3 — NULL significa "no se pudo resolver", NUNCA "vale
+            cero". Desde esta versión no debería aparecer en solicitudes
+            nuevas: si el ítem nunca se le facturó al cliente, la creación
+            se rechaza con 400 en vez de guardar una línea sin precio.
+            Puede seguir apareciendo en solicitudes anteriores.
         proposed_amount:
           type: number
           format: double
@@ -6938,6 +7092,40 @@ components:
         decided_by: { type: string, nullable: true }
         decided_at: { type: string, format: date-time, nullable: true }
         decision_note: { type: string, nullable: true }
+        salesperson_code:
+          type: string
+          nullable: true
+          description: >
+            ★ v0.33.2 — A QUÉ VENDEDOR PERTENECE la solicitud. Se resuelve
+            DESDE EL CLIENTE, no desde el token de quien la carga.
+
+            CAMBIO DE SIGNIFICADO respecto de v0.33.1 y anteriores: antes
+            salía del token, así que significaba "quién la presentó". Eso
+            producía atribución cruzada real — se midieron solicitudes de
+            clientes de los vendedores 8 y 14 guardadas a nombre del 11,
+            simplemente porque las cargó él. Nunca hubo validación de
+            propiedad: se comprobaba que el cliente tuviera UN vendedor
+            real, no que fuera el del que llama.
+
+            Ahora significa una sola cosa, la misma que en los pedidos: el
+            dueño. Quién la cargó vive en `created_by`.
+        created_by:
+          type: string
+          nullable: true
+          description: >
+            ★ NUEVO en v0.33.2. Usuario que CREÓ la solicitud, distinto de
+            `salesperson_code` (a quién pertenece).
+
+            Para un vendedor que carga la de su propio cliente, coinciden.
+            Para uno que carga la de un cliente ajeno, o para la oficina
+            creándola desde una devolución de ruta, difieren.
+
+            Mismo par de conceptos que en OrderSummary desde v0.30.0, y por
+            la misma razón: un documento pertenece a un vendedor y lo puede
+            haber cargado otro.
+
+            NULL en solicitudes anteriores a v0.33.2 — la columna nace
+            vacía y no se puede reconstruir quién las creó.
         source_return_id:
           type: string
           format: uuid
