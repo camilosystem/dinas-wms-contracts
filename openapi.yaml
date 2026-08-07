@@ -1,9 +1,66 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.32.0
+  version: 0.32.1
   description: >
     Contrato de la API del middleware Dinas WMS.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.32.1 — LO QUE SALIÓ DEL SEGUNDO RECHAZO DE SAP
+    ══════════════════════════════════════════════════════════════════════════
+
+    ★ 1. NO SE LIGA A UNA FACTURA PAGADA
+      SAP rechazó la nota de ítems con -5002: "One of the base documents
+      has already been closed".
+
+      La factura estaba en `bost_Close` por estar saldada
+      (`PaidToDate == DocTotal`), aunque sus LÍNEAS seguían en `bost_Open`
+      con la cantidad pendiente intacta. SAP mira la cabecera.
+
+      Otra corrección de un supuesto propio: se había decidido aceptar
+      facturas cerradas razonando que "estar saldada no impide devolver
+      mercancía". Es CIERTO para una nota independiente —la DocNum 561 lo
+      prueba, es contra esa misma factura cerrada— y FALSO para una ligada.
+
+      REGLA: factura abierta → se liga. Factura pagada → nota independiente
+      con `ItemCode`, precio y almacén explícitos, y el `invoice_doc_num`
+      registrado en `Comments`. Automático, sin frenar.
+
+      POR QUÉ automático: las devoluciones de cartera vieja son justamente
+      las que llegan DESPUÉS del pago. Trabar cada crédito sobre factura
+      saldada bloquearía el caso más común.
+
+    ★ 2. POST /admin/credit-requests/{uuid}/retry — NUEVO
+      El modelo de dos documentos contempla que uno falle y el otro quede
+      hecho. Pero no había forma de reintentar el que falló desde el
+      Dashboard: reaprobar da 409, y `/admin/sap-sync/*` es la superficie
+      del sincronizador.
+
+      El aprobador podía VER que un documento quedó en error y no tenía cómo
+      hacer nada. Esto cierra esa mitad.
+
+    ★ 3. ADMIN puede aprobar créditos — y la implementación no lo cumplía
+      El contrato decía "REQUIERE APROBADOR_CREDITOS o ADMIN" desde v0.17.0,
+      y el middleware rechazaba a ADMIN con 403.
+
+      Se detectó midiendo la matriz de roles: el 409 con el rol correcto
+      sobre la misma solicitud probó que el 403 era de ROL, no de estado.
+
+      El efecto: el Dashboard deja entrar a ADMIN a la bandeja, así que
+      podía cargar montos, elegir líneas, apretar Aprobar — y recibir un 403
+      con cuerpo vacío. Es un bug de implementación, no un cambio de diseño.
+
+    ★ NOTA SOBRE LOS BORRADORES DE SAP
+      Van dos veces que un borrador acepta algo que el documento asentado
+      rechaza. Queda acotado qué prueban y qué no:
+
+        SÍ validan  — forma del payload y nombres de campo, resolución de
+                      DocEntry, existencia del base_line, aritmética de
+                      montos y totales.
+        NO validan  — tipo de cuenta contable, estado del documento base.
+
+      Siguen valiendo la pena: atrapan errores de estructura barato. Pero el
+      veredicto real llega en el POST.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.32.0 — LO QUE SALIÓ DE LA PRIMERA NOTA REAL
@@ -2250,6 +2307,72 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /admin/credit-requests/{request_uuid}/retry:
+    post:
+      tags: [admin]
+      summary: Reintentar la integración de un documento que falló
+      description: >
+        ★ NUEVO en v0.32.1. REQUIERE rol APROBADOR_CREDITOS o ADMIN.
+
+        Vuelve a encolar el documento indicado de una solicitud ya
+        aprobada, para que el sincronizador lo intente de nuevo.
+
+        POR QUÉ EXISTE: el modelo de dos documentos contempla que uno se
+        integre y el otro falle, y que el que pasó QUEDE HECHO. Pero hasta
+        v0.32.0 no había forma de reintentar el que falló desde el
+        Dashboard: reaprobar devuelve 409 `credit_request_already_decided`,
+        y los endpoints `/admin/sap-sync/*` son la superficie del
+        sincronizador, no la del Dashboard.
+
+        O sea que el aprobador podía VER que un documento quedó en error y
+        no tenía cómo hacer nada al respecto. Este endpoint cierra esa
+        mitad.
+
+        Solo aplica a documentos en `ERROR_INTEGRACION`. Un documento ya
+        integrado no se reintenta: devuelve 409 y no toca nada — igual que
+        reportar dos veces sobre una tarea ya integrada.
+      parameters:
+        - name: request_uuid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [doc_kind]
+              properties:
+                doc_kind:
+                  type: string
+                  enum: [ITEMS, SERVICE]
+                  description: >
+                    Cuál de los documentos de la solicitud se reintenta. Es
+                    obligatorio porque una solicitud puede tener dos, y solo
+                    uno de ellos puede haber fallado.
+      responses:
+        '200':
+          description: Documento re-encolado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreditRequestDetail' }
+        '400':
+          description: doc_kind inválido, o la solicitud no tiene ese documento
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            El documento no está en ERROR_INTEGRACION — ya está integrado, o
+            todavía no se intentó.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /admin/credit-requests/{request_uuid}/approve:
     post:
       tags: [admin]
@@ -2264,7 +2387,17 @@ paths:
         verdad una o dos notas de crédito reales (ver
         `CreditRequestSapDocument`).
 
-        ★ v0.17.0. REQUIERE rol APROBADOR_CREDITOS (o ADMIN).
+        ★ v0.17.0. REQUIERE rol APROBADOR_CREDITOS **o ADMIN**.
+
+        ⚠️ v0.32.1 — esto siempre estuvo en el contrato y la implementación
+        NO lo cumplía: rechazaba a ADMIN con 403. Se detectó midiendo la
+        matriz de roles, y el 409 con el rol correcto sobre la misma
+        solicitud probó que el 403 era de ROL y no de estado.
+
+        El efecto era feo: el Dashboard deja entrar a ADMIN a la bandeja,
+        así que podía abrirla, cargar montos, elegir líneas, apretar
+        Aprobar — y recibir un 403 con cuerpo vacío. Es un bug de
+        implementación, no un cambio de diseño.
         Si la solicitud es SIN ítems, la cuenta G/L se resuelve
         automáticamente por `reason` (tabla de configuración, no elegible
         manualmente).
@@ -5832,6 +5965,33 @@ components:
 
             NULL cuando la solicitud no trae factura: la nota va
             independiente.
+
+            ⚠️ v0.32.1 — AUNQUE VENGA CON VALOR, EL SINCRONIZADOR NO LIGA
+            SI LA FACTURA ESTÁ PAGADA. SAP rechaza el documento con -5002
+            ("One of the base documents has already been closed") cuando la
+            factura base está en `bost_Close`.
+
+            Y "cerrada" significa PAGADA, no "sin cantidad disponible": una
+            factura saldada tiene sus líneas en `bost_Open` con
+            `RemainingOpenQuantity` intacta, y SAP igual la rechaza porque
+            mira la CABECERA.
+
+            REGLA: el sincronizador consulta el estado de la factura antes
+            de armar el payload. Si está abierta, liga
+            (`BaseType 13` + `BaseEntry` + `BaseLine`). Si está pagada, arma
+            la línea COMPLETA —`ItemCode`, precio y almacén explícitos— sin
+            vínculo, y registra el `invoice_doc_num` en `Comments` junto al
+            `request_uuid` para no perder el rastro.
+
+            El resultado contable y el movimiento de inventario son
+            idénticos; lo único que se pierde es el enlace formal en SAP, y
+            es el mismo mecanismo de trazabilidad que el negocio ya usa hoy
+            en sus notas de servicio, que referencian la factura en prosa.
+
+            POR QUÉ AUTOMÁTICO y no rechazando para revisión humana: las
+            devoluciones de cartera vieja son justamente las que llegan
+            DESPUÉS del pago. Trabar cada crédito sobre una factura saldada
+            bloquearía el caso más común de todos.
 
     SapCreditRequestSyncTask:
       type: object
