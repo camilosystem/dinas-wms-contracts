@@ -1,9 +1,58 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.32.2
+  version: 0.33.0
   description: >
     Contrato de la API del middleware Dinas WMS.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.33.0 — LA DEVOLUCIÓN DE RUTA PRECARGA LA SOLICITUD
+    ══════════════════════════════════════════════════════════════════════════
+
+    ★ EL PROBLEMA
+      El driver ya captura en ruta todo lo que una solicitud de crédito
+      necesita: cliente, ítem, cantidad, motivo y foto. Y después alguien en
+      oficina lo vuelve a escribir a mano en la pantalla del Dashboard.
+
+      El mismo dato, dos veces. Y el campo con más riesgo de transcripción
+      es el motivo, que determina la cuenta contable, el almacén destino y
+      si el stock vuelve como vendible o no. Un DANADO transcrito como
+      NO_LO_QUIERE manda mercancía dañada al stock bueno.
+
+    ★ QUÉ CAMBIA
+      · `CreditRequestCreate` gana `source_return_id` — la devolución de la
+        que nació la solicitud.
+      · `ProductReturn` gana `credit_request_uuid` — la solicitud que ya se
+        creó desde ella, si existe.
+
+      Las dos mitades del mismo vínculo. Sin ellas, crear dos créditos
+      desde la misma devolución sería INVISIBLE: cada uno se vería
+      perfectamente válido, y serían dos créditos por la misma mercancía.
+
+    ★ EL MAPEO DE MOTIVOS NO ES UNO A UNO
+      Las dos taxonomías no coinciden, y eso es lo que hace que la precarga
+      tenga que PROPONER y no transcribir:
+
+        DANADO        → DAMAGED          (almacén 07, no vendible)
+        EXPIRADO      → DAMAGED          (vencido tampoco es vendible)
+        NO_LO_QUIERE  → DOESNT_WANT_IT   ⚠️ corregible a MISTAKE
+
+      MISTAKE no existe del lado del driver: si se envió el artículo
+      equivocado, él lo trae igual y solo puede marcarlo NO_LO_QUIERE. La
+      oficina lo corrige.
+
+      SHORT tampoco, y con razón: un faltante nunca llegó al cliente, así
+      que no hay nada que el driver traiga. Ese motivo seguirá naciendo en
+      el Dashboard o en la app de ventas.
+
+    ★ LO QUE NO HIZO FALTA
+      Ningún endpoint nuevo. `GET /admin/returns` ya devuelve todo lo que
+      la precarga necesita: client_code, client_name, y los ítems con
+      item_code, item_name, quantity y reason.
+
+      `client_reference` (la referencia que dio el cliente: factura,
+      remisión) es TEXTO LIBRE — sirve como pista para que la persona
+      busque la factura, no como invoice_doc_num.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.32.2 — ADMIN TAMBIÉN PUEDE RECHAZAR CRÉDITOS
@@ -6668,12 +6717,35 @@ components:
           format: uuid
           description: Identidad de la solicitud, generada por la app. Hace el POST idempotente.
         client_code: { type: string }
+        source_return_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            ★ NUEVO en v0.33.0. La devolución de ruta (ProductReturn) de la
+            que nació esta solicitud, cuando se creó precargándola desde
+            una.
+
+            NULL cuando la solicitud nace de otro lado — el vendedor desde
+            la app, o la oficina sin una devolución detrás (por ejemplo un
+            SHORT, que nunca viene de ruta).
+
+            POR QUÉ EXISTE: sin él, crear dos créditos desde la misma
+            devolución sería invisible — cada uno se vería perfectamente
+            válido, y serían dos créditos por la misma mercancía. Con él,
+            la devolución expone su `credit_request_uuid` y el Dashboard
+            puede mostrar cuáles ya se procesaron.
         invoice_doc_num:
           type: string
           nullable: true
           description: >
             OPCIONAL. Factura sobre la que aplica el ajuste, si aplica a una
             específica. Un crédito general del cliente puede omitirla.
+
+            ★ v0.33.0 — al precargar desde una devolución, `client_reference`
+            del ProductReturn es una PISTA (la referencia que dio el
+            cliente: factura, remisión) pero es TEXTO LIBRE. Sirve para que
+            la persona busque la factura, no como valor de este campo.
         reason: { $ref: '#/components/schemas/CreditRequestReason' }
         lines:
           type: array
@@ -6866,6 +6938,14 @@ components:
         decided_by: { type: string, nullable: true }
         decided_at: { type: string, format: date-time, nullable: true }
         decision_note: { type: string, nullable: true }
+        source_return_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            ★ NUEVO en v0.33.0. La devolución de ruta de la que nació esta
+            solicitud, si se creó precargándola desde una. NULL si nació de
+            la app del vendedor o de la oficina sin devolución detrás.
         invoice_doc_num:
           type: string
           nullable: true
@@ -7816,6 +7896,27 @@ components:
         Distinto de ItemRejectionReason (que es para lo que se rechaza al
         RECIBIR la entrega de hoy): esto es mercancía de facturas anteriores.
 
+        ★ v0.33.0 — MAPEO A CreditRequestReason, para precargar una
+        solicitud de crédito desde una devolución. NO son la misma
+        taxonomía y la correspondencia no es uno a uno:
+
+          DANADO        → DAMAGED          (almacén 07, no vendible)
+          EXPIRADO      → DAMAGED          (vencido tampoco es vendible)
+          NO_LO_QUIERE  → DOESNT_WANT_IT   ⚠️ CORREGIBLE A MISTAKE
+
+        El último es el que exige criterio humano: si se envió el artículo
+        equivocado, el driver lo trae igual y solo puede marcarlo
+        NO_LO_QUIERE, porque su taxonomía no tiene MISTAKE. La oficina lo
+        corrige al crear la solicitud.
+
+        Y el motivo importa: determina la cuenta contable, el almacén
+        destino y si el stock vuelve como vendible o no. Por eso la
+        precarga PROPONE y una persona CONFIRMA — nunca se transcribe a
+        ciegas.
+
+        SHORT nunca viene de una devolución de ruta: un faltante jamás
+        llegó al cliente, así que no hay nada que el driver traiga.
+
     ProductReturn:
       type: object
       description: >
@@ -7863,6 +7964,19 @@ components:
           type: string
           format: date-time
           description: Cuándo llegó al servidor.
+        credit_request_uuid:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            ★ NUEVO en v0.33.0. La solicitud de crédito que ya se creó a
+            partir de esta devolución, si existe. NULL si todavía no se
+            procesó.
+
+            Existe para que el Dashboard pueda mostrar cuáles devoluciones
+            ya tienen crédito sin recorrer todas las solicitudes buscando.
+            Sin esto, crear dos créditos por la misma mercancía devuelta
+            sería invisible: cada uno se vería perfectamente válido.
 
     ProductReturnItem:
       type: object
