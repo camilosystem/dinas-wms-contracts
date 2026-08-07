@@ -1,9 +1,31 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.32.1
+  version: 0.32.2
   description: >
     Contrato de la API del middleware Dinas WMS.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.32.2 — ADMIN TAMBIÉN PUEDE RECHAZAR CRÉDITOS
+    ══════════════════════════════════════════════════════════════════════════
+
+      `POST /admin/credit-requests/{uuid}/reject` pasa a aceptar ADMIN,
+      alineándose con `approve` y `retry`, que ya lo tenían.
+
+      La asimetría estaba al revés desde el riesgo: un ADMIN podía APROBAR
+      —que crea notas de crédito reales en SAP y mueve inventario— pero no
+      RECHAZAR, que no tiene ningún efecto externo.
+
+      Lo notó el agente de middleware al implementar v0.32.1: revisó el
+      contrato, vio que reject no incluía ADMIN, y NO lo "arregló por
+      simetría" — lo dejó como estaba y lo fijó en test, con el argumento
+      correcto de que ampliar quién puede rechazar es una decisión de
+      negocio y no una consecuencia de haber tocado approve.
+
+      NOTA sobre las bandejas de Pagos: `account-payments` approve y reject
+      siguen SIN ADMIN, los dos. Cada bandeja queda coherente consigo misma
+      —créditos con ADMIN en ambas acciones, pagos en ninguna— pero
+      distintas entre sí. Está sin revisar si eso es deliberado.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.32.1 — LO QUE SALIÓ DEL SEGUNDO RECHAZO DE SAP
@@ -2506,7 +2528,17 @@ paths:
     post:
       tags: [admin]
       summary: Rechazar una solicitud de crédito
-      description: ★ v0.17.0. REQUIERE rol APROBADOR_CREDITOS. Motivo obligatorio.
+      description: >
+        ★ v0.32.2 — REQUIERE rol APROBADOR_CREDITOS **o ADMIN**. Motivo
+        obligatorio.
+
+        ADMIN se agrega para alinear con `approve`, que lo tiene desde
+        v0.17.0. La asimetría estaba al revés desde el riesgo: un ADMIN
+        podía APROBAR —que crea notas de crédito reales en SAP y mueve
+        inventario— pero no RECHAZAR, que no tiene ningún efecto externo.
+        Se le permitía la acción peligrosa y se le negaba la inocua.
+
+        ★ v0.17.0.
       parameters:
         - name: request_uuid
           in: path
