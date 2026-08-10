@@ -29,6 +29,22 @@ info:
       consumió el stock mientras estaba en la calle— y sin esto quedaría
       en `discrepancies_found` para siempre.
 
+    ★ Y UN SEGUNDO ARREGLO: LA VIGENCIA DE PROMOCIONES SE EVALÚA EN
+      HORA DE NUEVA YORK
+      Se comparaba contra el día UTC, y eso recortaba las últimas CUATRO
+      HORAS de vigencia todos los días — justo en la franja de venta en
+      ruta. El vendedor recibía `invalid_promotion` sin forma de entender
+      por qué.
+
+      No cambia ninguna forma de dato: `valid_from`/`valid_to` siguen
+      siendo fechas sin hora. Lo que cambia es contra qué día se comparan.
+      Sin migración.
+
+      Los tres lugares que evalúan vigencia cambian JUNTOS — el libro del
+      vendedor, la aceptación del pedido y la activación por el analista.
+      Arreglar uno solo los volvería inconsistentes entre sí, que es peor
+      que el bug actual.
+
     ★ QUÉ CAMBIA
       `invoice-readiness` y `reduce-allocation` aceptan los mismos cuatro
       estados que `send-to-invoicing`: ALISTADO, ASIGNADO_DRIVER, EN_RUTA
@@ -684,6 +700,33 @@ info:
       - FREE_ITEMS: los ítems de beneficio tienen discount_pct=100.
       - DISCOUNTED_ITEMS: cada ítem de beneficio tiene su propio
         discount_pct definido por el analista.
+
+      ⚠️ ZONA HORARIA DE LA VIGENCIA (★ v0.34.1). `valid_from` y
+      `valid_to` son fechas SIN HORA, y se evalúan contra el día
+      calendario de **Nueva York** (`America/New_York`), no contra el día
+      UTC.
+
+      Antes se comparaban contra el día UTC, y eso recortaba las últimas
+      cuatro horas de vigencia TODOS LOS DÍAS: una promoción con
+      `valid_to = 2026-08-09` dejaba de valer a las 20:00 hora de Nueva
+      York, porque ahí ya eran las 00:00 UTC del 10. Justo en la franja de
+      venta en ruta, y el vendedor recibía un 400 `invalid_promotion` sin
+      forma de entender por qué.
+
+      Con la zona explícita, `valid_to` significa lo que el negocio
+      entiende al escribir una fecha: hasta el final de ESE día en Nueva
+      York.
+
+      Los tres lugares que evalúan vigencia —el libro del vendedor, la
+      aceptación del pedido, y la activación por el analista— usan el
+      mismo cálculo y DEBEN cambiar juntos. Si solo cambiara el libro, el
+      vendedor vería la promoción a las 21:00 y el pedido se le
+      rechazaría igual: hoy son consistentes en el error, y arreglar uno
+      solo los volvería inconsistentes, que es peor.
+
+      Y va la ZONA, no un desfase fijo: Nueva York es UTC−4 en verano y
+      UTC−5 en invierno, así que un número se equivoca por una hora medio
+      año.
 
       VIGENCIA: toda promoción tiene valid_from/valid_to (fechas de inicio
       y fin). Se activa/desactiva manualmente — un analista no puede
