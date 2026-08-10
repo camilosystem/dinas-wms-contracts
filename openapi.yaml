@@ -1,9 +1,45 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.34.0
+  version: 0.34.1
   description: >
     Contrato de la API del middleware Dinas WMS.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.34.1 — COMPLETA v0.34.0, QUE NO PODÍA FUNCIONAR
+    ══════════════════════════════════════════════════════════════════════════
+
+    ★ QUÉ FALTABA
+      v0.34.0 amplió `send-to-invoicing` a cuatro estados para que un
+      camión despachado se pudiera facturar. Pero hay TRES compuertas que
+      exigían ALISTADO, no una — y solo se amplió esa.
+
+      `send-to-invoicing` exige un chequeo de disponibilidad LIMPIO y de
+      menos de 5 minutos, y `invoice-readiness` es el ÚNICO lugar que
+      escribe esos campos. Como seguía rechazando a los camiones
+      despachados, ninguno podía obtener un chequeo fresco — y el rechazo
+      llegaba igual, con `no_readiness_check` o `stale_readiness_check` en
+      lugar de `not_alistado`.
+
+      El callejón sin salida no se había cerrado: se había mudado de
+      compuerta.
+
+      Y la tercera, `reduce-allocation`, es la única vía para resolver una
+      discrepancia. Un camión despachado puede tenerlas —si otra factura
+      consumió el stock mientras estaba en la calle— y sin esto quedaría
+      en `discrepancies_found` para siempre.
+
+    ★ QUÉ CAMBIA
+      `invoice-readiness` y `reduce-allocation` aceptan los mismos cuatro
+      estados que `send-to-invoicing`: ALISTADO, ASIGNADO_DRIVER, EN_RUTA
+      y RUTA_CERRADA. Con el mismo código de rechazo,
+      `picking_not_complete`, para los anteriores.
+
+      El argumento es el mismo que el de v0.34.0, aplicado hasta el final:
+      si la condición real es que el picking esté completo, eso vale igual
+      para el chequeo y para la corrección que para el envío. El chequeo es
+      una lectura que compara demanda contra stock; nada en él depende de
+      que el camión no haya salido.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.34.0 — UN CAMIÓN DESPACHADO YA SE PUEDE FACTURAR
@@ -3068,7 +3104,19 @@ paths:
       tags: [dispatch-admin]
       summary: Chequeo de stock antes de enviar a facturación — compara demanda agregada del camión contra SAP
       description: >
-        ★ v0.27.0. REQUIERE ADMIN. Solo aplica a camiones en ALISTADO.
+        ★ v0.34.1 — aplica a camiones en ALISTADO, ASIGNADO_DRIVER,
+        EN_RUTA o RUTA_CERRADA. Antes exigía ALISTADO, y eso dejaba a
+        v0.34.0 sin efecto: `send-to-invoicing` se amplió a esos cuatro
+        estados pero exige un chequeo LIMPIO y de menos de 5 minutos, y
+        este endpoint es el ÚNICO que lo escribe. Un camión despachado no
+        podía obtenerlo nunca, así que el rechazo llegaba igual — solo que
+        con otro código. El callejón no se había cerrado, se había mudado
+        de compuerta.
+
+        Es una lectura: compara lo que el camión demanda contra el stock
+        disponible. Nada en ella depende de que el camión no haya salido.
+
+        ★ v0.27.0. REQUIERE ADMIN.
         Por cada ítem con demanda en el camión (suma de PalletAssignment
         de TODAS sus órdenes APROBADA), compara contra el stock real del
         almacén 01 (vw_WMS_Stock — usa POST /admin/sap-refresh/trigger
@@ -3091,7 +3139,9 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: El camión no está en ALISTADO
+          description: >
+            El picking del camión no está completo (código
+            `picking_not_complete`) — se acepta desde ALISTADO en adelante.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -3101,6 +3151,13 @@ paths:
       tags: [dispatch-admin]
       summary: Reducción dirigida — descompletar un ítem de UNA orden específica para resolver una discrepancia
       description: >
+        ★ v0.34.1 — aplica a camiones en ALISTADO, ASIGNADO_DRIVER,
+        EN_RUTA o RUTA_CERRADA, por la misma razón que los otros dos: es
+        la única vía para resolver una discrepancia, y un camión despachado
+        puede tenerlas. Si otra factura consumió el stock mientras el
+        camión estaba en la calle, sin esto quedaría en
+        `discrepancies_found` para siempre.
+
         ★ v0.27.0. REQUIERE ADMIN. Reduce ÚNICAMENTE
         PalletAssignment.Quantity de esta orden+ítem — nada más del
         camión, del lane, ni de otras órdenes se toca (alcance
@@ -3152,7 +3209,9 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: El camión no está en ALISTADO
+          description: >
+            El picking del camión no está completo (código
+            `picking_not_complete`) — se acepta desde ALISTADO en adelante.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
