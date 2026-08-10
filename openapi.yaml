@@ -1,9 +1,48 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.33.3
+  version: 0.34.0
   description: >
     Contrato de la API del middleware Dinas WMS.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.34.0 — UN CAMIÓN DESPACHADO YA SE PUEDE FACTURAR
+    ══════════════════════════════════════════════════════════════════════════
+
+    ★ LA TRAMPA QUE SE CIERRA
+      `send-to-invoicing` exigía ALISTADO. Pero asignar un driver saca al
+      camión de ese estado, y cuando el driver ARRANCA LA RUTA pasa a
+      EN_RUTA, donde `unassign-driver` lo rechaza.
+
+      Resultado: un camión que salía a repartir sin haberse facturado NO SE
+      PODÍA FACTURAR NUNCA. Mercancía entregada, sin factura, y sin
+      camino de vuelta. Nada avisaba en ningún momento.
+
+      Se descubrió persiguiendo otra cosa — un camión que "no aparecía" en
+      la pantalla de facturación resultó haberse pasado de largo, no
+      quedado corto.
+
+    ★ POR QUÉ EL ESTADO ERA LA CONDICIÓN EQUIVOCADA
+      La condición real nunca fue "estar en ALISTADO" sino que el PICKING
+      ESTÉ COMPLETO. Las cantidades alistadas no cambian porque el camión
+      salga a la calle, así que la factura sale igual de correcta.
+
+      Ahora se acepta ALISTADO, ASIGNADO_DRIVER, EN_RUTA y RUTA_CERRADA.
+      Los estados anteriores siguen rechazados —ahí las cantidades todavía
+      se mueven— con el código `picking_not_complete`, que reemplaza al
+      viejo `not_alistado`.
+
+    ★ Y UN AVISO, PORQUE ARREGLARLO NO ES LO MISMO QUE EVITARLO
+      `TruckSummary` gana `sent_to_invoicing`: si el camión ya pasó por
+      send-to-invoicing.
+
+      Despachar sin facturar deja de ser irreversible, pero sigue siendo un
+      error silencioso. Con este campo el Dashboard puede advertirlo al
+      asignar el driver — el último momento en que corregirlo es gratis.
+
+      Es información, no bloqueo. Puede haber razones legítimas para
+      despachar antes de facturar, y el sistema no debería decidir eso por
+      la operación.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.33.3 — NO SE ACREDITA LO QUE NUNCA SE VENDIÓ
@@ -3123,6 +3162,31 @@ paths:
       tags: [dispatch-admin]
       summary: Envío manual a facturación — encola ORDER_INVOICE para todas las órdenes elegibles del camión
       description: >
+        ★ v0.34.0 — ACEPTA el camión en ALISTADO, ASIGNADO_DRIVER,
+        EN_RUTA o RUTA_CERRADA. Antes exigía ALISTADO, y eso creaba un
+        callejón sin salida:
+
+        Asignar un driver saca al camión de ALISTADO (recuperable con
+        unassign-driver), pero cuando el driver ARRANCA LA RUTA el camión
+        pasa a EN_RUTA y ya no hay vuelta — `unassign-driver` lo rechaza.
+        Un camión que salía a repartir sin haberse facturado no se podía
+        facturar NUNCA, y nada avisaba en ningún momento.
+
+        La condición real nunca fue el estado sino que el PICKING ESTÉ
+        COMPLETO, y eso lo cumplen los cuatro estados de arriba por igual:
+        las cantidades alistadas ya no cambian porque el camión salga.
+
+        Sigue rechazando los estados anteriores a ALISTADO (código
+        `picking_not_complete`), donde las cantidades todavía pueden
+        moverse.
+
+        NOTA sobre el chequeo de disponibilidad en camiones ya
+        despachados: el stock de SAP no se decrementa hasta que la factura
+        existe, así que la mercancía de un camión sin facturar sigue
+        contada aunque físicamente haya salido — el chequeo da limpio. Si
+        otra factura consumió ese stock mientras tanto, el chequeo falla, y
+        eso es correcto: no se puede facturar lo que en SAP ya no está.
+
         ★ v0.27.0. REQUIERE ADMIN. Reemplaza el disparo automático que
         existía en ALISTADO desde v0.22.0 — ahora SOLO esto encola las
         tareas. EXIGE que el último invoice-readiness de este camión
@@ -3155,9 +3219,14 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: >
-            El camión no está en ALISTADO, o el último invoice-readiness
-            no es limpio y reciente — ver Error.code
-            (no_readiness_check | stale_readiness_check | discrepancies_found).
+            El picking del camión no está completo, o el último
+            invoice-readiness no es limpio y reciente — ver Error.code
+            (picking_not_complete | no_readiness_check |
+            stale_readiness_check | discrepancies_found).
+
+            ★ v0.34.0 — `picking_not_complete` reemplaza al viejo
+            `not_alistado`, que ya no describe la condición: ahora se acepta
+            cualquier estado desde ALISTADO en adelante.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -8319,6 +8388,22 @@ components:
           description: >
             ★ v0.6.0 — Si el camión ya tiene su orden de paradas importado
             (de OptimoRoute). Requisito para picar en el Bloque 2.
+        sent_to_invoicing:
+          type: boolean
+          description: >
+            ★ NUEVO en v0.34.0. Si este camión ya pasó por
+            send-to-invoicing — es decir, si tiene tareas ORDER_INVOICE
+            encoladas.
+
+            NO significa que las facturas existan en SAP: significa que se
+            pidieron. Una tarea puede estar pendiente o en error. Para el
+            estado real de la integración hay que mirar las tareas.
+
+            EXISTE PARA PREVENIR UNA PÉRDIDA: un camión puede despacharse
+            sin facturar, y aunque desde v0.34.0 eso ya no es irreversible,
+            sigue siendo un error silencioso. Con este campo el Dashboard
+            puede advertirlo en el momento en que todavía es gratis
+            corregirlo — al asignar el driver, antes de que salga.
         assigned_to:
           type: string
           nullable: true
