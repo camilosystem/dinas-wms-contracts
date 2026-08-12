@@ -1,9 +1,59 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.34.1
+  version: 0.35.0
   description: >
     Contrato de la API del middleware Dinas WMS.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.35.0 — CAMIONES: LO QUE FALTABA PARA OPERARLOS
+    ══════════════════════════════════════════════════════════════════════════
+
+    Tres huecos que se fueron acumulando, todos alrededor de los camiones.
+
+    ★ 1. GET /admin/trucks/pending-invoicing — NUEVO
+      La pantalla de Facturación pendiente componía su pregunta desde el
+      cliente (estado + fecha) y eso la dejaba ciega dos veces: por la
+      fecha, que tiene default "hoy" en UTC y escondía los camiones de días
+      anteriores; y por el estado, que es lo grave — pedía solo ALISTADO,
+      así que un camión despachado sin facturar NUNCA aparecía, y ese es
+      justamente el caso que v0.34.0 abrió para poder resolver. El arreglo
+      existía en el backend y era inalcanzable desde la interfaz.
+
+      Ahora el servidor responde la pregunta del negocio: picking completo
+      y sin enviar a facturación. Sin fecha.
+
+    ★ 2. PATCH /admin/trucks/{truck_id} — NUEVO
+      No había ninguna forma de corregir el nombre de un camión. Un error
+      de tipeo quedaba a la vista en la grilla para siempre, y la única
+      salida era editar la base a mano — que es exactamente lo que hubo que
+      hacer con un camión llamado "Camlo-Queens".
+
+    ★ 3. El `name` al crear un camión pasa a ser OBLIGATORIO
+      Era opcional y el servidor asignaba un código automático, lo que llenó
+      la base de camiones "Sin nombre". Junto con el PATCH, cierra el mismo
+      problema por sus dos puntas: que se ponga un nombre, y que se pueda
+      arreglar si sale mal.
+
+    ★ 4. `invoice_date` se calcula en hora de NUEVA YORK, no en UTC
+      Viaja a SAP como DocDate, y SAP rechaza con -5002 cualquier fecha
+      posterior a su fecha de sistema. Como el día UTC empieza a las 20:00
+      de Nueva York, calcularlo en UTC hacía que TODA facturación nocturna
+      mandara el día siguiente y fuera rechazada.
+
+      Medido: dos tareas en ERROR con 3 intentos, enviadas de noche, contra
+      siete facturas de una corrida matutina que pasaron limpio.
+
+      Es el quinto lugar donde "hoy" se calculaba en UTC, y el más caro: los
+      otros cuatro esconden filas en pantallas, este rompe la facturación
+      todas las noches.
+
+      La regla vale para toda fecha que termine en un documento de SAP.
+
+    ★ NOTA DE VERSIONADO
+      El archivo publicado bajo el tag v0.34.2 declaraba `version: 0.34.1`
+      por dentro. El contenido era el correcto —el sha coincide— pero el
+      campo quedó desactualizado. Corregido acá.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.34.1 — COMPLETA v0.34.0, QUE NO PODÍA FUNCIONAR
@@ -4004,15 +4054,26 @@ paths:
         REQUIERE rol ADMIN. Crea un camión vacío que el admin irá llenando
         con órdenes. Empieza en estado BORRADOR.
       requestBody:
-        required: false
+        required: true
         content:
           application/json:
             schema:
               type: object
+              required: [name]
               properties:
                 name:
                   type: string
-                  description: Nombre/etiqueta opcional (ej. "Camión 1 - Ruta 11").
+                  minLength: 1
+                  description: >
+                    ★ v0.35.0 — OBLIGATORIO. Antes era opcional y el servidor
+                    asignaba un código automático, lo que llenó la base de
+                    camiones llamados "Sin nombre" — invisibles de distinguir
+                    en la grilla, que es donde el admin trabaja todos los días.
+
+                    Un nombre en blanco o solo espacios se rechaza con 400.
+
+                    Conviene que refleje la ruta real ("Ruta 11 - Jackson
+                    Heights"), no un número de secuencia.
                 note: { type: string }
       responses:
         '201':
@@ -4020,6 +4081,64 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TruckDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/trucks/pending-invoicing:
+    get:
+      tags: [trucks]
+      summary: Camiones pendientes de facturar
+      description: >
+        ★ NUEVO en v0.35.0. REQUIERE rol ADMIN.
+
+        Devuelve los camiones cuyo picking está completo y que TODAVÍA NO se
+        enviaron a facturación. Sin filtro de fecha.
+
+        ★ POR QUÉ NO ALCANZABA GET /admin/trucks?status=ALISTADO
+
+        La pantalla de Facturación pendiente componía la pregunta desde el
+        cliente —estado más fecha— y eso la dejaba ciega en dos frentes:
+
+        1. **La fecha.** `date` tiene default "hoy" y filtra por
+           `created_at` en UTC. Un camión alistado ayer era invisible y no
+           se podía facturar desde el Dashboard. Y como el día UTC corta a
+           las 20:00 de Nueva York, después de esa hora desaparecían
+           también los del propio día. No había forma de pedir "todas las
+           fechas".
+
+        2. **El estado, que es lo grave.** Desde v0.34.0 se puede facturar
+           un camión en ALISTADO, ASIGNADO_DRIVER, EN_RUTA o RUTA_CERRADA
+           — el arreglo que existe justamente para que un camión despachado
+           sin facturar no quede sin salida. Pero la pantalla pedía solo
+           ALISTADO, así que **ese caso nunca aparecía en la lista**: el
+           arreglo estaba en el backend y era inalcanzable desde la
+           interfaz.
+
+        "Pendiente de facturar" no es un estado ni un día: es una pregunta
+        del negocio, y el servidor es quien conoce su definición. Este
+        endpoint la responde en vez de hacer que el cliente la arme.
+
+        ★ QUÉ INCLUYE
+        Camiones con el picking completo —los cuatro estados de arriba— y
+        `sent_to_invoicing = false`. Nada más.
+
+        Un camión ya enviado desaparece de la lista aunque siga en
+        ALISTADO, que es lo que corresponde: el estado no cambia al
+        facturar.
+
+        Ordenados por `alistado_at` ascendente — lo que espera hace más
+        tiempo, primero.
+      responses:
+        '200':
+          description: Camiones pendientes de facturar
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  trucks:
+                    type: array
+                    items: { $ref: '#/components/schemas/TruckSummary' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
@@ -4089,6 +4208,62 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TruckDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [trucks]
+      summary: Renombrar un camión o cambiar su nota
+      description: >
+        ★ NUEVO en v0.35.0. REQUIERE rol ADMIN.
+
+        POR QUÉ EXISTE: no había NINGUNA forma de corregir el nombre de un
+        camión — ni PUT ni PATCH. Un error de tipeo al crearlo quedaba a la
+        vista en la grilla para siempre, y la única salida era editar la
+        base a mano.
+
+        Junto con el `name` ahora obligatorio en la creación, cierra el
+        mismo problema por sus dos puntas: que se ponga un nombre, y que se
+        pueda arreglar si sale mal.
+
+        Solo toca la etiqueta y la nota. NO cambia estado, órdenes, driver
+        ni nada del flujo — para eso están los endpoints específicos.
+
+        Se puede renombrar un camión en CUALQUIER estado, incluso ya
+        despachado o cerrado: el nombre es una etiqueta para humanos, y un
+        error de tipeo no se vuelve incorregible porque el camión haya
+        salido.
+      parameters:
+        - name: truck_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  description: >
+                    Nombre nuevo. Si se omite, no se toca. En blanco o solo
+                    espacios → 400.
+                note:
+                  type: string
+                  nullable: true
+                  description: >
+                    Nota nueva. Enviar null la borra; omitirla la deja como
+                    está.
+      responses:
+        '200':
+          description: Camión actualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TruckDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -6540,7 +6715,29 @@ components:
             invoice_date:
               type: string
               format: date
-              description: Fecha del momento en que el camión llegó a ALISTADO (Truck.AlistadoAtUtc).
+              description: >
+                Fecha del momento en que el camión llegó a ALISTADO
+                (Truck.AlistadoAtUtc), expresada como **día calendario de
+                Nueva York**.
+
+                ⚠️ v0.35.0 — NO es el día UTC de ese instante. Viaja a SAP
+                como DocDate, y SAP RECHAZA con -5002 ("enter posting date
+                that is equal to or earlier than system date") cualquier
+                fecha posterior a su fecha de sistema.
+
+                Como el día UTC empieza a las 20:00 de Nueva York, calcularlo
+                en UTC hace que toda facturación entre las 20:00 y la
+                medianoche mande el día siguiente y SAP la rechace. Medido:
+                dos tareas en ERROR con 3 intentos, enviadas de noche,
+                mientras que las siete facturas de una corrida matutina
+                pasaron sin problema.
+
+                Es el mismo cálculo que la vigencia de promociones, y por la
+                misma razón: el calendario que importa es el del negocio, no
+                el del reloj del servidor.
+
+                LA MISMA REGLA VALE PARA TODA FECHA QUE TERMINE EN UN
+                DOCUMENTO DE SAP — pagos y notas de crédito incluidos.
             lines:
               type: array
               description: >
