@@ -1,9 +1,86 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.35.0
+  version: 0.36.0
   description: >
     Contrato de la API del middleware Dinas WMS.
+
+    ══════════════════════════════════════════════════════════════════════════
+    ⏰ REGLA GLOBAL — TODO EL SISTEMA TRABAJA EN HORA DE NUEVA YORK
+    ══════════════════════════════════════════════════════════════════════════
+
+    ★ v0.36.0. Vale para TODA la superficie, no solo para lo que la
+    menciona explícitamente.
+
+    Cualquier campo de tipo `date`, cualquier filtro por fecha y cualquier
+    noción de "hoy" se resuelven contra el **día calendario de Nueva York**
+    (`America/New_York`), NUNCA contra el día UTC.
+
+    Los `date-time` siguen siendo instantes en UTC — eso no cambia. Lo que
+    cambia es cómo se deriva un DÍA a partir de un instante, y contra qué
+    calendario se compara una fecha.
+
+    ★ POR QUÉ ESTÁ ESCRITO ACÁ Y NO CAMPO POR CAMPO
+
+    Porque el error se repitió en cinco lugares distintos antes de que
+    alguien lo tratara como una regla y no como cinco bugs:
+
+      · La vigencia de promociones — se perdían las últimas cuatro horas de
+        cada día, justo en la franja de venta en ruta, y el vendedor recibía
+        un rechazo sin poder explicarlo.
+      · La fecha de factura — SAP rechazaba con -5002 toda facturación
+        posterior a las 20:00, porque el día UTC ya era el siguiente y SAP
+        compara contra su fecha de sistema.
+      · El listado de camiones, las devoluciones, los pagos y el tablero de
+        picking — cada uno escondiendo el trabajo del propio día a partir de
+        esa misma hora.
+
+    El día UTC empieza a las 20:00 de Nueva York en verano y a las 19:00 en
+    invierno. Todo lo que se calcule en UTC deja de coincidir con el
+    calendario del negocio durante las últimas horas de cada jornada — que
+    son, justamente, cuando la operación está más activa.
+
+    ★ Y VA LA ZONA, NO UN DESFASE
+
+    `America/New_York`, no un número. Nueva York es UTC−4 en verano y UTC−5
+    en invierno; un offset fijo se equivoca por una hora medio año.
+
+    ★ ALCANCE
+
+    Aplica al middleware, al Dashboard y a las tres apps. Un cliente que
+    calcule "hoy" con el reloj UTC —por ejemplo con `toISOString()`— manda
+    el día equivocado durante esa franja y reproduce el problema desde su
+    lado, aunque el servidor esté bien.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.36.0 — EL ROL DE CADA LÍNEA EN UN BLOQUE DE PROMOCIÓN
+    ══════════════════════════════════════════════════════════════════════════
+
+    ★ OrderLine gana `promotion_role` (CONDITION | BENEFIT)
+      Obligatorio cuando la línea lleva `promotion_group_id`.
+
+      El rol existía conceptualmente y no estaba en el dato, así que la
+      validación agregaba cantidades por `item_code` y comparaba ese total
+      contra la condición y contra el beneficio por separado. Con ítems
+      distintos funcionaba POR ACCIDENTE; con el mismo ítem se colapsaba.
+
+      Una promoción "lleve 10, pague 9" del mismo producto mandaba dos
+      líneas (×10 y ×1) y el servidor veía 11. Y aunque se arreglara la
+      suma, el chequeo de descuento fallaba igual: exigía que TODAS las
+      líneas de ese ítem tuvieran el descuento del beneficio, y la de
+      condición va al 0%. Dos colisiones, las dos por inferir el rol en vez
+      de conocerlo.
+
+      Ahora las líneas CONDITION se validan contra la condición y las
+      BENEFIT contra el beneficio, nunca por agregado de ítem. Eso habilita
+      lo que antes era imposible: condición y beneficio del mismo producto
+      —la mecánica más común en distribución—, beneficios con descuento
+      parcial, y condiciones que ya traigan su propio descuento.
+
+      Se descartó inferirlo del descuento (se rompe con un beneficio
+      parcial) y de la cantidad (indistinguible si condición y beneficio
+      piden lo mismo). El cliente ya conoce el rol cuando arma el bloque
+      desde el libro: declararlo es más barato que adivinarlo del otro lado.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.35.0 — CAMIONES: LO QUE FALTABA PARA OPERARLOS
@@ -9047,6 +9124,60 @@ components:
             El servidor rechaza (400, code=invalid_promotion) un pedido
             donde se eliminen solo ALGUNAS líneas de un mismo grupo: el
             bloque es indivisible, se agrega y se elimina completo.
+        promotion_role:
+          type: string
+          enum: [CONDITION, BENEFIT]
+          nullable: true
+          description: >
+            ★ NUEVO en v0.36.0. Qué papel cumple esta línea dentro del
+            bloque de promoción.
+
+            **OBLIGATORIO cuando `promotion_group_id` no es null.** Null en
+            las líneas normales, y se ignora si viene sin
+            `promotion_group_id`.
+
+            ★ POR QUÉ HACÍA FALTA
+
+            El rol existía conceptualmente y NO estaba representado en el
+            dato. La validación no tenía con qué distinguir una línea de
+            otra, así que agregaba cantidades por `item_code` y comparaba
+            ese total contra la condición y contra el beneficio por
+            separado.
+
+            Con ítems distintos eso funcionaba POR ACCIDENTE —agrupar por
+            ítem los separaba sin proponérselo— y con el mismo ítem se
+            colapsaba: una promoción "lleve 10, pague 9" del mismo producto
+            mandaba dos líneas (×10 y ×1) y el servidor veía 11, rechazando
+            con `invalid_promotion`. Y aunque se arreglara la suma, el
+            chequeo de descuento también fallaba: exigía que TODAS las
+            líneas de ese ítem tuvieran el descuento del beneficio, y la de
+            condición va al 0%.
+
+            Eran dos colisiones, y las dos salían de lo mismo: inferir el
+            rol en vez de conocerlo.
+
+            ★ CÓMO SE VALIDA AHORA
+
+            Las líneas `CONDITION` se comparan contra la condición de la
+            promoción; las `BENEFIT` contra el beneficio, incluido su
+            descuento. **Nunca por agregado de `item_code`.**
+
+            Eso hace posible lo que antes no lo era: que la condición y el
+            beneficio sean el mismo producto —la mecánica más común en
+            distribución— y también un beneficio con descuento parcial, o
+            una condición que ya venga con su propio descuento.
+
+            ★ POR QUÉ EXPLÍCITO Y NO INFERIDO
+
+            Se descartó deducirlo del descuento (se rompe con un beneficio
+            parcial) y de la cantidad (indistinguible si condición y
+            beneficio piden lo mismo). El cliente YA conoce el rol cuando
+            arma el bloque desde el libro de promociones: pedirle que lo
+            declare es más barato y más honesto que adivinarlo del otro
+            lado.
+
+            Es el mismo criterio que llevó a que el aprobador elija
+            `base_line` en vez de deducirla del `item_code`.
 
     OrderAccepted:
       type: object
