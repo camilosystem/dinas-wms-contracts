@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.37.0
+  version: 0.37.1
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -51,6 +51,78 @@ info:
     calcule "hoy" con el reloj UTC —por ejemplo con `toISOString()`— manda
     el día equivocado durante esa franja y reproduce el problema desde su
     lado, aunque el servidor esté bien.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.37.1 — EL PAYLOAD DEL SINCRONIZADOR DEJA DE AGRUPAR POR ÍTEM
+    ══════════════════════════════════════════════════════════════════════════
+
+    Corrige un hueco de v0.37.0 en su propio terreno. Esa versión declaró
+    que el mismo ítem puede ir en varias líneas (★ 4), pero dejó
+    `SapOrderInvoiceSyncTask.lines` agrupando por `item_code` —
+    literalmente "SUM(PalletAssignment.Quantity) para este
+    OrderUuid+ItemCode — NO OrderLine.Quantity".
+
+    O sea que el contrato bendecía dos líneas del mismo producto con
+    condiciones distintas y, al facturar, las fusionaba en una sola, con el
+    precio y el descuento de UNA de las dos.
+
+    ★ QUÉ ROMPE EN LA PRÁCTICA
+
+      Una promoción "lleve 10, pague 9" del mismo ítem manda dos líneas
+      —condición ×10 al 0% y beneficio ×1 al 100%—. Agrupadas, la factura
+      sale 11 × precio de lista: la unidad gratis se cobra. Y el caso que
+      v0.37.0 habilita a propósito —diez a precio de lista y dos con
+      descuento negociado— saldría las doce al precio de una sola de las
+      dos líneas.
+
+      `expected_doc_total` se calculaba sobre esas mismas líneas ya
+      fusionadas, así que la reconciliación no detectaba la divergencia:
+      la horneaba. SAP y la orden coincidían en el número equivocado.
+
+    ★ QUÉ CAMBIA
+
+      `lines` pasa a llevar UNA ENTRADA POR LÍNEA DEL PEDIDO, no por ítem.
+      `item_code` PUEDE REPETIRSE entre entradas, y el sincronizador no
+      debe agrupar por ese campo en ningún punto del camino.
+
+      Es el mismo principio que ya rige en las solicitudes de crédito desde
+      v0.31.0: una línea se identifica por su id, nunca por `item_code`,
+      justamente porque puede repetirse.
+
+      El orden del array es el orden de las líneas del pedido, y el índice
+      de cada entrada es el `BaseLineNumber` de la línea de la factura y de
+      sus asignaciones de bin.
+
+    ★ REPARTO DE LA CANTIDAD ENTRE LÍNEAS DEL MISMO ÍTEM
+
+      `PalletAssignment` es por (orden, ítem): el reparto físico no sabe a
+      qué línea comercial pertenece cada unidad. La regla —decisión de
+      negocio, no del código— es POR ORDEN DE LÍNEA: se llena cada línea
+      hasta su cantidad pedida antes de pasar a la siguiente.
+
+      Sin faltante es exacto y no decide nada. Con faltante el recorte cae
+      en las últimas líneas, que en una promoción significa perder primero
+      la unidad gratis — correcto, porque sin la compra que la condiciona
+      no corresponde el beneficio.
+
+      Eso exige que el orden de las líneas sea un dato PERSISTIDO y no el
+      que devuelva la consulta: quedarse con "la primera" de un agrupamiento
+      sin orden explícito puede tomar cualquiera de las dos, y cuál gane
+      cambia lo que se le cobra al cliente.
+
+    ★ LO QUE NO CAMBIA
+
+      `approximate` sigue significando lo mismo: certeza sobre el BIN de
+      origen, no sobre la línea. Un ítem que salió de un solo bin sigue en
+      `approximate=false` aunque su cantidad se reparta entre dos líneas —
+      el bin sigue siendo un hecho directo.
+
+      Una línea en faltante total sigue sin aparecer en el array. Por eso el
+      índice es el número de línea de la FACTURA, no el del pedido.
+
+      Ningún otro schema cambia. `OrderCreate`, `OrderSummary` y los
+      endpoints de borrador quedan exactamente como en v0.37.0: esto toca
+      solo el payload que consume el sincronizador.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.37.0 — BORRADORES, DESCUENTO DE DOCUMENTO Y FLETE
@@ -1086,6 +1158,10 @@ info:
         Líneas sin nada repartido (faltante total) se excluyen del
         payload; si una orden entera no tiene ninguna línea repartida, no
         se encola ninguna tarea para ella.
+        ⚠️ SUPERADO EN v0.37.1: la agrupación por ItemCode se retiró — el
+        payload lleva una entrada por LÍNEA del pedido. Lo que sigue
+        vigente de este punto es que la cantidad es la REPARTIDA y no la
+        pedida, y la exclusión de las líneas en faltante total.
       - Precio por línea: OrderLine.UnitPrice + LineDiscountPct,
         congelados al tomar el pedido — el WMS nunca los revalida, y SAP
         debe obedecerlos tal cual (nunca resolverlos por su cuenta).
@@ -7111,9 +7187,24 @@ components:
             lines:
               type: array
               description: >
-                Solo incluye ítems con cantidad repartida > 0 (de
-                PalletAssignment). Si una línea de la orden quedó en
-                faltante total, no aparece aquí.
+                ★ v0.37.1 — UNA ENTRADA POR LÍNEA DEL PEDIDO, NO POR ÍTEM.
+
+                `item_code` PUEDE REPETIRSE entre entradas: el mismo producto
+                con condiciones distintas son líneas distintas (el bloque de
+                promoción manda condición y beneficio del mismo ítem, y
+                v0.37.0 lo permite también para líneas normales). El
+                sincronizador NO debe agrupar por `item_code` en ningún punto
+                del camino — agruparlo fusiona dos líneas y cobra las dos al
+                precio y el descuento de una sola.
+
+                EL ORDEN DEL ARRAY ES EL ORDEN DE LAS LÍNEAS DEL PEDIDO, y el
+                índice de cada entrada es el `BaseLineNumber` de la línea de
+                la factura y de sus asignaciones de bin.
+
+                Solo incluye líneas con cantidad repartida > 0 (de
+                PalletAssignment). Una línea que quedó en faltante total no
+                aparece — por eso el índice es el número de línea de la
+                FACTURA, no el del pedido.
               items:
                 type: object
                 properties:
@@ -7121,7 +7212,19 @@ components:
                   quantity:
                     type: number
                     format: double
-                    description: SUM(PalletAssignment.Quantity) para este OrderUuid+ItemCode — NO OrderLine.Quantity.
+                    description: >
+                      ★ v0.37.1 — cantidad repartida asignada a ESTA LÍNEA, ya
+                      no la suma del ítem.
+
+                      PalletAssignment es por (orden, ítem), así que lo
+                      repartido de un ítem se asigna a sus líneas POR ORDEN DE
+                      LÍNEA: se llena cada una hasta su OrderLine.Quantity
+                      antes de pasar a la siguiente. Sin faltante cada línea
+                      recibe exactamente lo pedido; con faltante el recorte
+                      cae en las últimas líneas de ese ítem.
+
+                      Sigue sin ser OrderLine.Quantity: es lo REPARTIDO, que
+                      con faltante es menor.
                   unit_price:
                     type: number
                     format: double
@@ -7181,6 +7284,14 @@ components:
                       camión, la suma sí cuadra exacto contra lo recogido por
                       bin. El sincronizador arma DocumentLinesBinAllocations
                       con esto tal cual, sin recalcular nada de su lado.
+
+                      ★ v0.37.1 — si un ítem va en varias líneas, sus filas de
+                      bin se reparten entre esas líneas siguiendo el mismo
+                      orden de línea que la cantidad. `approximate` no cambia
+                      de significado: habla del BIN de origen, no de la línea.
+                      Un ítem que salió de un solo bin sigue en
+                      `approximate=false` aunque su cantidad se divida entre
+                      dos líneas.
                     items:
                       type: object
                       properties:
