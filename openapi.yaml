@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.36.0
+  version: 0.37.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -51,6 +51,74 @@ info:
     calcule "hoy" con el reloj UTC —por ejemplo con `toISOString()`— manda
     el día equivocado durante esa franja y reproduce el problema desde su
     lado, aunque el servidor esté bien.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.37.0 — BORRADORES, DESCUENTO DE DOCUMENTO Y FLETE
+    ══════════════════════════════════════════════════════════════════════════
+
+    Sale de reuniones con usuarios. El carrito del Dashboard tiene menos
+    restricciones que la app de vendedores a propósito, y le faltaban tres
+    cosas que la operación real necesita.
+
+    ★ 1. BORRADORES DE PEDIDO — entidad y endpoints propios
+      Guardar el carrito para retomarlo: una cotización sin confirmar, o no
+      perder lo armado al cambiar de cliente.
+
+      Es una ENTIDAD APARTE y no un `Order.Status` nuevo, y la razón importa:
+      un pedido que existe consume cupo, aparece en la grilla y se puede
+      montar en un camión. Un borrador no hace nada de eso. Si fuera un
+      estado, cada consulta tendría que acordarse de excluirlo — y el día
+      que alguien se olvidara, una cotización aparecería en el tablero de
+      picking.
+
+      El borrador guarda el PAYLOAD de creación tal cual, y convertirlo es
+      reenviarlo por el camino normal. Una sola validación, ningún borrador
+      imposible de convertir.
+
+      No se valida al guardar, sí al convertir. Consecuencia a mostrar bien
+      en pantalla: un borrador guardado hoy puede fallar mañana porque la
+      promoción venció o el cliente entró en mora.
+
+      Convertir crea el pedido y borra el borrador en UNA operación: en dos
+      llamadas, un fallo entre medio dejaría el pedido creado y el borrador
+      vivo, y alguien lo convertiría de nuevo.
+
+    ★ 2. DESCUENTO DE DOCUMENTO — `invoice_discount_pct`
+      Sobre el subtotal, distinto del descuento por línea.
+
+      Va en PORCENTAJE porque es lo que SAP almacena a nivel de documento.
+      Un cliente puede aceptar un monto y calcular el porcentaje, pero debe
+      mostrar el valor resultante antes de confirmar: el redondeo puede dar
+      centavos de diferencia, y eso se ve en la factura.
+
+    ★ 3. FLETE — `freight_amount`
+      Se SUMA al total y NO recibe el descuento de documento. Se descuenta
+      mercancía, no transporte.
+
+    ★ ORDEN DE APLICACIÓN, que define el total
+      líneas con su descuento → subtotal → descuento de documento sobre ese
+      subtotal → flete sumado sin descontar.
+
+    ★ 4. EL MISMO ÍTEM PUEDE IR EN VARIAS LÍNEAS, y ahora está dicho
+      Permite vender el mismo producto con condiciones distintas en un
+      pedido: diez a precio de lista y dos con descuento negociado.
+
+      Ya era así de hecho —el bloque de promoción manda condición y
+      beneficio del mismo ítem en líneas separadas, y las facturas repiten
+      ítems por diseño— pero no estaba escrito para las líneas normales.
+
+    ★ LOS DOS CAMPOS VIAJAN EN TRES LUGARES, no en uno
+      OrderCreate, OrderSummary y el payload del sincronizador.
+
+      Si faltaran en OrderSummary, las tres apps iOS mostrarían un total que
+      no cuadra con la suma de las líneas y nadie podría explicar la
+      diferencia. Si faltaran en el payload del sincronizador, la factura
+      saldría a SAP sin el descuento ni el flete: la orden diría un total y
+      SAP otro.
+
+      Y `expected_doc_total` deja de ser la simple suma de las líneas —
+      ahora incluye las dos cosas, porque es contra lo que el sincronizador
+      compara el DocTotal que devuelve SAP.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.36.0 — EL ROL DE CADA LÍNEA EN UN BLOQUE DE PROMOCIÓN
@@ -4161,6 +4229,231 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /order-drafts:
+    get:
+      tags: [orders]
+      summary: Listar borradores de pedido
+      description: >
+        ★ NUEVO en v0.37.0. REQUIERE rol ADMIN o VENDEDOR_INSTITUCIONAL.
+
+        Un ADMIN ve TODOS los borradores. Un VENDEDOR_INSTITUCIONAL ve solo
+        los suyos — los que él creó.
+
+        Ordenados por `updated_at` descendente: lo último que se tocó,
+        primero.
+      responses:
+        '200':
+          description: Borradores visibles para el llamador
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  drafts:
+                    type: array
+                    items: { $ref: '#/components/schemas/OrderDraftSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [orders]
+      summary: Guardar un pedido como borrador
+      description: >
+        ★ NUEVO en v0.37.0. REQUIERE rol ADMIN o VENDEDOR_INSTITUCIONAL.
+
+        ★ QUÉ ES UN BORRADOR
+
+        El carrito guardado, tal cual, para retomarlo después. Sirve para
+        una cotización que el cliente todavía no confirmó, y para no perder
+        lo armado cuando hay que cambiar de cliente o de vendedor.
+
+        ★ UN BORRADOR NO ES UN PEDIDO. Deliberadamente no es un
+        `Order.Status` nuevo: un pedido que existe consume cupo del cliente,
+        aparece en la grilla de Órdenes y se puede montar en un camión. Un
+        borrador no hace nada de eso.
+
+        Si fuera un estado, cada consulta del sistema tendría que acordarse
+        de excluirlo — y el día que alguien se olvidara, una cotización
+        aparecería en el tablero de picking. Como entidad aparte, eso es
+        imposible por construcción.
+
+        ★ GUARDA EL PAYLOAD, NO UNA COPIA PARECIDA
+
+        El cuerpo es un `OrderCreate` completo, y se guarda tal cual.
+        Convertirlo es reenviar ese mismo payload por el camino normal de
+        creación, así que no hay dos validaciones que puedan divergir ni
+        forma de que exista un borrador imposible de convertir por una
+        diferencia de forma.
+
+        ★ NO SE VALIDA AL GUARDAR
+
+        Un borrador se guarda como esté: cliente en mora, ítem sin stock,
+        promoción vencida, cantidades en cero. Las validaciones corren al
+        CONVERTIR, no antes.
+
+        Eso es a propósito —una cotización a medio armar tiene que poder
+        guardarse— pero tiene una consecuencia que el cliente debe mostrar
+        bien: **un borrador guardado hoy puede fallar mañana**, porque la
+        promoción venció, el cliente entró en mora o el ítem se agotó. El
+        error al convertir tiene que ser legible, no un 400 crudo.
+
+        Lo único que se valida al guardar es que el cuerpo sea un
+        `OrderCreate` sintácticamente válido.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [payload]
+              properties:
+                title:
+                  type: string
+                  nullable: true
+                  description: >
+                    Etiqueta libre para reconocerlo en la lista ("Cotización
+                    Arepa Lady", "pendiente confirmación"). Opcional.
+                payload:
+                  allOf:
+                    - $ref: '#/components/schemas/OrderCreate'
+                  description: >
+                    El pedido tal como se enviaría a POST /orders.
+
+                    El `request_uuid`/`client_uuid` que traiga se guarda
+                    igual, pero conviene generarlo recién al convertir: si
+                    el mismo borrador se convierte dos veces, un uuid
+                    repetido lo haría idempotente y la segunda conversión
+                    devolvería el primer pedido en vez de crear otro.
+      responses:
+        '201':
+          description: Borrador guardado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderDraftDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /order-drafts/{draft_id}:
+    get:
+      tags: [orders]
+      summary: Leer un borrador
+      description: >
+        ★ NUEVO en v0.37.0. REQUIERE ADMIN o VENDEDOR_INSTITUCIONAL.
+        Un institucional solo puede leer los suyos — si pide uno ajeno,
+        404 (no 403: que no exista para él es más honesto que confirmarle
+        que existe y no puede verlo).
+      parameters:
+        - name: draft_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: El borrador
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderDraftDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [orders]
+      summary: Reemplazar el contenido de un borrador
+      description: >
+        ★ NUEVO en v0.37.0. Mismo alcance por rol que el GET.
+
+        Reemplaza el payload completo — un borrador se edita guardándolo de
+        nuevo, no parcheándolo. Actualiza `updated_at`.
+
+        Tampoco valida el contenido: mismo criterio que al crear.
+      parameters:
+        - name: draft_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [payload]
+              properties:
+                title: { type: string, nullable: true }
+                payload: { $ref: '#/components/schemas/OrderCreate' }
+      responses:
+        '200':
+          description: Borrador actualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderDraftDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [orders]
+      summary: Eliminar un borrador
+      description: >
+        ★ NUEVO en v0.37.0. Mismo alcance por rol que el GET. Se borra
+        definitivamente — un borrador no deja rastro, porque nunca fue un
+        documento.
+      parameters:
+        - name: draft_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Eliminado }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /order-drafts/{draft_id}/convert:
+    post:
+      tags: [orders]
+      summary: Convertir un borrador en pedido
+      description: >
+        ★ NUEVO en v0.37.0. Mismo alcance por rol que el GET.
+
+        Crea el pedido con el payload guardado y BORRA el borrador, en una
+        sola operación.
+
+        ★ POR QUÉ UN ENDPOINT Y NO DOS LLAMADAS DEL CLIENTE: si el cliente
+        hiciera POST /orders y después DELETE del borrador, un fallo entre
+        medio deja el pedido creado y el borrador vivo — y alguien lo
+        convierte de nuevo, duplicando el pedido. Acá o pasan las dos cosas
+        o no pasa ninguna.
+
+        ★ LAS VALIDACIONES SON LAS DE POST /orders, sin excepción: cupo,
+        mora, promociones vigentes, precios autorizados. Si alguna falla, se
+        devuelve el MISMO código de error que devolvería la creación normal,
+        y **el borrador NO se borra** — queda para corregirlo.
+
+        No hay revisión de nadie más: convertir es el mismo usuario
+        confirmando. No es un flujo de aprobación.
+      parameters:
+        - name: draft_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '201':
+          description: Pedido creado y borrador eliminado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderAccepted' }
+        '400':
+          description: >
+            El payload guardado ya no es válido — mismos códigos que
+            POST /orders. El borrador se conserva.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /admin/trucks/pending-invoicing:
     get:
       tags: [trucks]
@@ -6900,16 +7193,44 @@ components:
                             ítem+camión). true = repartido determinísticamente
                             entre varios bins — exacto en el agregado del
                             camión, aproximado por línea individual.
+            invoice_discount_pct:
+              type: number
+              format: double
+              nullable: true
+              description: >
+                ★ NUEVO en v0.37.0. Descuento de documento del pedido, para
+                que la factura salga con él. Null si no hubo.
+
+                Sin esto la factura saldría por el monto sin descontar: la
+                orden diría un total y SAP otro.
+            freight_amount:
+              type: number
+              format: double
+              nullable: true
+              description: >
+                ★ NUEVO en v0.37.0. Flete del pedido, para que la factura lo
+                cobre. Null si no hubo.
+
+                SAP lo modela como gasto adicional del documento, con su
+                propio código y cuenta. El sincronizador resuelve esa
+                correspondencia; el contrato solo transporta el monto.
             expected_doc_total:
               type: number
               format: double
               description: >
-                ★ v0.25.0. Suma de todos los expected_line_total. Es lo único
-                que le da al sincronizador algo contra qué comparar el
-                DocTotal real que devuelva SAP — sin esto, no hay forma de
-                detectar una divergencia real (ej. la primera factura con un
-                descuento fraccionario, donde el redondeo de SAP puede diferir
-                en centavos).
+                ★ v0.25.0. Es lo único que le da al sincronizador algo contra
+                qué comparar el DocTotal real que devuelva SAP — sin esto no
+                hay forma de detectar una divergencia real (ej. un descuento
+                fraccionario, donde el redondeo de SAP puede diferir en
+                centavos).
+
+                ★ v0.37.0 — YA NO es la simple suma de los
+                expected_line_total: incluye el descuento de documento y el
+                flete, en el mismo orden que define OrderCreate (líneas con
+                su descuento → descuento de documento sobre el subtotal →
+                flete sumado sin descontar).
+
+                Es el total que el sincronizador espera que SAP le devuelva.
 
     # ★ v0.28.0 — PROMOCIONES
     PromotionType:
@@ -9060,10 +9381,64 @@ components:
             realmente se registra aparte en created_by.
         taken_at: { type: string, format: date-time }
         notes: { type: string }
+        invoice_discount_pct:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+          nullable: true
+          description: >
+            ★ NUEVO en v0.37.0. Descuento de DOCUMENTO, sobre el subtotal
+            del pedido. Distinto del `line_discount_pct` de cada línea.
+
+            Null o 0 = sin descuento de documento.
+
+            ★ ORDEN DE APLICACIÓN, que decide el total:
+              1. cada línea aplica su propio `line_discount_pct`
+              2. el subtotal es la suma de esas líneas ya descontadas
+              3. `invoice_discount_pct` se aplica sobre ese subtotal
+              4. `freight_amount` se SUMA después, sin descontarse
+
+            El flete queda fuera del descuento a propósito: se descuenta
+            mercancía, no transporte.
+
+            ★ POR QUÉ PORCENTAJE Y NO MONTO: es lo que SAP almacena a nivel
+            de documento. Un cliente puede aceptar un monto en pantalla y
+            calcular el porcentaje, pero conviene que muestre el valor
+            resultante antes de confirmar — el redondeo puede dar unos
+            centavos de diferencia contra el monto pedido, y eso se ve en la
+            factura.
+        freight_amount:
+          type: number
+          format: double
+          minimum: 0
+          nullable: true
+          description: >
+            ★ NUEVO en v0.37.0. Cargo por flete, en la moneda del pedido.
+            Se SUMA al total y no recibe el descuento de documento.
+
+            Null o 0 = sin flete.
+
+            SAP lo maneja como gasto adicional del documento con su propio
+            código y cuenta contable. La correspondencia exacta se define
+            al implementar el lado del sincronizador; el contrato solo
+            transporta el monto.
         lines:
           type: array
           minItems: 1
           items: { $ref: '#/components/schemas/OrderLine' }
+          description: >
+            ★ v0.37.0 — el MISMO `item_code` PUEDE aparecer en varias
+            líneas, y no solo dentro de un bloque de promoción.
+
+            Es lo que permite vender el mismo producto con condiciones
+            distintas en un mismo pedido: diez unidades a precio de lista y
+            dos con un descuento negociado, cada una en su línea.
+
+            Ya era así de hecho —el bloque de promoción manda condición y
+            beneficio del mismo ítem en líneas separadas, y las facturas
+            repiten ítems por diseño— pero no estaba dicho para las líneas
+            normales.
 
     OrderLine:
       type: object
@@ -9179,6 +9554,52 @@ components:
             Es el mismo criterio que llevó a que el aprobador elija
             `base_line` en vez de deducirla del `item_code`.
 
+    OrderDraftSummary:
+      type: object
+      description: >
+        ★ NUEVO en v0.37.0. Un borrador en la lista, con lo mínimo para
+        reconocerlo sin abrirlo.
+      properties:
+        draft_id: { type: string, format: uuid }
+        title:
+          type: string
+          nullable: true
+          description: Etiqueta libre que puso quien lo guardó.
+        client_code: { type: string }
+        client_name:
+          type: string
+          nullable: true
+          description: >
+            Resuelto al leer, no guardado — si el cliente cambió de nombre,
+            se ve el actual.
+        salesperson_code: { type: string, nullable: true }
+        line_count: { type: integer }
+        estimated_total:
+          type: number
+          format: double
+          description: >
+            Total calculado con lo que el borrador tiene guardado, en el
+            mismo orden que define OrderCreate.
+
+            ⚠️ Es ESTIMADO: los precios son los que estaban al guardar. No
+            se recalcula contra las listas actuales, y el pedido real puede
+            salir por otro monto.
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    OrderDraftDetail:
+      allOf:
+        - $ref: '#/components/schemas/OrderDraftSummary'
+        - type: object
+          properties:
+            payload:
+              allOf:
+                - $ref: '#/components/schemas/OrderCreate'
+              description: >
+                El pedido guardado, tal cual se enviaría a POST /orders.
+                Es lo que el carrito vuelve a cargar al retomarlo.
+
     OrderAccepted:
       type: object
       properties:
@@ -9251,7 +9672,31 @@ components:
         taken_at: { type: string, format: date-time }
         received_at: { type: string, format: date-time }
         line_count: { type: integer }
-        total_amount: { type: number, format: double }
+        total_amount:
+          type: number
+          format: double
+          description: >
+            ★ v0.37.0 — el total FINAL: líneas con sus descuentos, menos el
+            descuento de documento, más el flete. O sea que desde v0.37.0
+            NO tiene por qué coincidir con la suma de las líneas.
+        invoice_discount_pct:
+          type: number
+          format: double
+          nullable: true
+          description: >
+            ★ NUEVO en v0.37.0. Descuento de documento aplicado. Null si no
+            hubo.
+
+            Viaja acá porque sin él un cliente que sume las líneas obtiene
+            un número distinto de `total_amount` y no puede explicar la
+            diferencia — lo ven las tres apps iOS, no solo el Dashboard.
+        freight_amount:
+          type: number
+          format: double
+          nullable: true
+          description: >
+            ★ NUEVO en v0.37.0. Flete cobrado. Null si no hubo. Misma razón
+            que el anterior.
         status: { $ref: '#/components/schemas/OrderStatus' }
         hold_reason:
           allOf:
