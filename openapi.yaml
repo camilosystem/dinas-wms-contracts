@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.37.1
+  version: 0.37.2
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -51,6 +51,50 @@ info:
     calcule "hoy" con el reloj UTC —por ejemplo con `toISOString()`— manda
     el día equivocado durante esa franja y reproduce el problema desde su
     lado, aunque el servidor esté bien.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.37.2 — EL client_uuid DE UN BORRADOR LO EMITE EL SERVIDOR
+    ══════════════════════════════════════════════════════════════════════════
+
+    Corrige un consejo de v0.37.0 que ningún cliente podía cumplir y que,
+    además, protegía del escenario equivocado. Decía: "conviene generarlo
+    recién al convertir: si el mismo borrador se convierte dos veces, un
+    uuid repetido lo haría idempotente".
+
+    ★ POR QUÉ NO SE PODÍA CUMPLIR
+      `POST /order-drafts/{draft_id}/convert` no recibe body. El cliente no
+      tiene por dónde mandar un uuid nuevo al convertir.
+
+    ★ Y POR QUÉ ESE ESCENARIO NO EXISTÍA
+      Un mismo borrador no se puede convertir dos veces: convertir borra el
+      borrador en la misma operación, así que la segunda llamada da 404.
+
+    ★ EL RIESGO REAL, QUE SÍ EXISTE
+      DOS BORRADORES DISTINTOS con el mismo `client_uuid`. Pasa solo: el
+      carrito genera el uuid UNA VEZ por carrito y lo reusa al reintentar
+      —a propósito, para que la idempotencia de POST /orders funcione—, así
+      que guardar dos veces el mismo carrito deja dos borradores con el
+      mismo uuid. Convertir el primero crea el pedido; convertir el segundo
+      devuelve EL PRIMERO por idempotencia, borra el borrador, y nadie se
+      entera de que el segundo pedido nunca existió.
+
+      La misma forma tiene una secuencia más corta y más probable: guardar
+      el carrito como borrador, enviarlo igual por el camino normal, y
+      convertir el borrador más tarde.
+
+    ★ QUÉ CAMBIA
+      Al convertir, el SERVIDOR emite un `client_uuid` nuevo e IGNORA el
+      guardado. La garantía deja de depender de que cada cliente se acuerde
+      —hay tres apps y un Dashboard— y el borrador deja de arrastrar una
+      llave de idempotencia emitida en otro momento.
+
+      La idempotencia de la conversión no se pierde: la sostiene la
+      existencia del borrador, que se borra en la misma transacción. Un
+      reintento después de convertir da 404, nunca un pedido duplicado.
+
+      Los clientes pueden seguir regenerando el uuid en cada guardado —es
+      sano y mantiene el payload honesto— pero ya no es lo que sostiene la
+      garantía.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.37.1 — EL PAYLOAD DEL SINCRONIZADOR DEJA DE AGRUPAR POR ÍTEM
@@ -4394,11 +4438,17 @@ paths:
                   description: >
                     El pedido tal como se enviaría a POST /orders.
 
-                    El `request_uuid`/`client_uuid` que traiga se guarda
-                    igual, pero conviene generarlo recién al convertir: si
-                    el mismo borrador se convierte dos veces, un uuid
-                    repetido lo haría idempotente y la segunda conversión
-                    devolvería el primer pedido en vez de crear otro.
+                    ★ CORREGIDO EN v0.37.2. El `client_uuid` que traiga se
+                    guarda tal cual, pero AL CONVERTIR NO SE USA: el
+                    servidor emite uno nuevo (ver el endpoint de
+                    conversión). El texto anterior aconsejaba generarlo
+                    "recién al convertir", cosa que ningún cliente puede
+                    hacer porque /convert no recibe body.
+
+                    Conviene igual que el cliente genere un uuid nuevo en
+                    cada guardado, para que el payload guardado sea honesto
+                    y dos borradores no compartan llave. Pero la garantía
+                    ya no depende de eso.
       responses:
         '201':
           description: Borrador guardado
@@ -4508,6 +4558,17 @@ paths:
 
         No hay revisión de nadie más: convertir es el mismo usuario
         confirmando. No es un flujo de aprobación.
+
+        ★ v0.37.2 — EL `client_uuid` LO EMITE EL SERVIDOR AL CONVERTIR, y
+        se ignora el que venga guardado en el payload. Si se reusara el
+        guardado, dos borradores nacidos del mismo carrito compartirían
+        llave de idempotencia y la segunda conversión devolvería el pedido
+        de la primera en vez de crear uno nuevo — borrando el borrador sin
+        que exista el pedido que el usuario cree haber creado.
+
+        Esto NO debilita la idempotencia de la conversión: la sostiene la
+        existencia del borrador, que se borra en la misma transacción. Un
+        reintento posterior da 404, nunca un pedido duplicado.
       parameters:
         - name: draft_id
           in: path
