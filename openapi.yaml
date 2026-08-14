@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.37.2
+  version: 0.37.3
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -51,6 +51,56 @@ info:
     calcule "hoy" con el reloj UTC —por ejemplo con `toISOString()`— manda
     el día equivocado durante esa franja y reproduce el problema desde su
     lado, aunque el servidor esté bien.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.37.3 — LOS MONTOS LLEGAN A LA APP DEL VENDEDOR DE VERDAD
+    ══════════════════════════════════════════════════════════════════════════
+
+    v0.37.0 puso `invoice_discount_pct` y `freight_amount` en `OrderSummary`
+    y escribió que "lo ven las tres apps iOS, no solo el Dashboard".
+
+    ERA FALSO, y lo detectó el agente del Mac verificando qué endpoints
+    consume cada app en vez de aceptar la afirmación.
+
+    ★ POR QUÉ NO LLEGABAN
+      `OrderSummary` lo devuelven `/my-orders`, `/admin/orders` y
+      `/admin/trucks/available-orders` — superficie de Dashboard y de admin.
+      La app de vendedores consume exactamente dos endpoints de pedidos:
+      `POST /orders`, que responde `OrderAccepted`, y `GET /sync/orders`,
+      que responde `OrderStatusUpdate`. Ninguno de los dos traía los montos.
+
+      O sea que el campo se agregó al lugar donde el consumidor declarado
+      nunca lo iba a ver. Es el ítem (a) de la checklist —quién PRODUCE y
+      quién CONSUME— fallando en su forma más pura: los dos lados existían,
+      pero no eran los dos lados del mismo camino.
+
+    ★ Y EL SUPUESTO DE OrderStatusUpdate TAMBIÉN ERA FALSO
+      Su descripción justificaba omitir `total_amount` con "eso la app ya lo
+      tiene". No lo tenía: `OrderAccepted` nunca lo devolvió, así que la app
+      jamás lo recibió. Venía calculándolo por su cuenta sumando líneas —
+      correcto mientras no existieron el descuento de documento ni el flete,
+      y equivocado desde v0.37.0.
+
+    ★ QUÉ CAMBIA
+      `OrderAccepted` y `OrderStatusUpdate` ganan `total_amount`,
+      `invoice_discount_pct` y `freight_amount`, los tres nulables.
+
+      En `OrderAccepted` para que la app capture el total AUTORITATIVO en el
+      momento de crear, en vez de reconstruirlo: dos aritméticas que deben
+      coincidir y nadie compara terminan divergiendo.
+
+      En `OrderStatusUpdate` porque es el ÚNICO canal por el que un cambio
+      posterior llega al vendedor. Hoy los montos se fijan al crear, pero ya
+      está decidido el bloque donde un humano ajusta el pedido antes de
+      facturarlo —reduciendo cantidades o quitando líneas— y ahí el total
+      cambia después de que la app lo recibió. Sin este campo, el vendedor
+      seguiría viendo el viejo.
+
+    ★ REGLA PARA EL CLIENTE
+      Si `total_amount` viene, se MUESTRA — no se recalcula ni se "corrige"
+      localmente. Si viene nulo (pedidos anteriores a esta versión, o un
+      carrito que el servidor todavía no tarifó), se cae a la suma de las
+      líneas. Nunca se mezclan las dos fuentes en la misma pantalla.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.37.2 — EL client_uuid DE UN BORRADOR LO EMITE EL SERVIDOR
@@ -226,9 +276,12 @@ info:
     ★ LOS DOS CAMPOS VIAJAN EN TRES LUGARES, no en uno
       OrderCreate, OrderSummary y el payload del sincronizador.
 
-      Si faltaran en OrderSummary, las tres apps iOS mostrarían un total que
-      no cuadra con la suma de las líneas y nadie podría explicar la
-      diferencia. Si faltaran en el payload del sincronizador, la factura
+      Si faltaran en OrderSummary, el Dashboard mostraría un total que no
+      cuadra con la suma de las líneas y nadie podría explicar la
+      diferencia. (★ CORREGIDO EN v0.37.3: este párrafo decía "las tres
+      apps iOS", y era falso — las apps no consumen OrderSummary. Los
+      montos les llegan por OrderAccepted y OrderStatusUpdate desde
+      v0.37.3.) Si faltaran en el payload del sincronizador, la factura
       saldría a SAP sin el descuento ni el flete: la orden diría un total y
       SAP otro.
 
@@ -9787,6 +9840,37 @@ components:
           description: >
             ★ Presente solo si status = RETENIDA_CARTERA.
             Explica POR QUÉ, para mostrárselo al vendedor.
+        total_amount:
+          type: number
+          format: double
+          nullable: true
+          description: >
+            ★ NUEVO en v0.37.3. El total que calculó el SERVIDOR para este
+            pedido, ya con el descuento de documento y el flete aplicados en
+            el orden que define OrderCreate.
+
+            La app debe GUARDARLO y MOSTRARLO, no recalcularlo sumando sus
+            líneas. Antes de v0.37.3 no viajaba y la app lo reconstruía; eso
+            era correcto mientras no existieron el descuento de documento ni
+            el flete, y dejó de serlo con v0.37.0.
+
+            Nulable solo por compatibilidad de lectura: un cliente que
+            guarde pedidos viejos va a tener filas sin este dato.
+        invoice_discount_pct:
+          type: number
+          format: double
+          nullable: true
+          description: >
+            ★ NUEVO en v0.37.3. Descuento de documento aplicado, para que la
+            app pueda EXPLICAR la diferencia entre la suma de sus líneas y
+            `total_amount`. Null si no hubo.
+        freight_amount:
+          type: number
+          format: double
+          nullable: true
+          description: >
+            ★ NUEVO en v0.37.3. Flete cobrado. Misma razón que el anterior.
+            Null si no hubo.
         received_at: { type: string, format: date-time }
 
     # ═══════════════ ESTADO DE LA ORDEN, SYNC-DOWN (★ v0.4.1) ═══════════════
@@ -9795,7 +9879,13 @@ components:
       description: >
         GET /sync/orders. Deliberadamente liviano: solo lo que puede cambiar
         DESPUÉS de que la app ya recibió la orden vía POST /orders -- no repite
-        client_name/lines/total_amount/notes (eso la app ya lo tiene).
+        client_name/lines/notes (eso la app ya lo tiene).
+
+        ★ v0.37.3 — `total_amount` SÍ viaja acá, y antes no. El texto viejo
+        lo omitía diciendo "eso la app ya lo tiene", y era falso:
+        `OrderAccepted` nunca lo devolvió, así que la app nunca lo tuvo.
+        Además el total puede cambiar después de creado el pedido, y este es
+        el único canal por el que ese cambio llega al vendedor.
       properties:
         client_uuid: { type: string, format: uuid }
         order_number: { type: string }
@@ -9804,6 +9894,28 @@ components:
           allOf:
             - $ref: '#/components/schemas/HoldReason'
           nullable: true
+        total_amount:
+          type: number
+          format: double
+          nullable: true
+          description: >
+            ★ NUEVO en v0.37.3. El total vigente del pedido según el
+            SERVIDOR, ya con descuento de documento y flete. Si viene, la
+            app lo MUESTRA tal cual y no lo recalcula; si viene nulo, cae a
+            la suma de sus líneas. Nunca se mezclan las dos fuentes.
+        invoice_discount_pct:
+          type: number
+          format: double
+          nullable: true
+          description: >
+            ★ NUEVO en v0.37.3. Para que la app pueda explicar la diferencia
+            entre la suma de sus líneas y `total_amount`. Null si no hubo.
+        freight_amount:
+          type: number
+          format: double
+          nullable: true
+          description: >
+            ★ NUEVO en v0.37.3. Misma razón que el anterior. Null si no hubo.
         decision_note:
           type: string
           nullable: true
@@ -9861,7 +9973,11 @@ components:
 
             Viaja acá porque sin él un cliente que sume las líneas obtiene
             un número distinto de `total_amount` y no puede explicar la
-            diferencia — lo ven las tres apps iOS, no solo el Dashboard.
+            diferencia.
+
+            ★ v0.37.3 — este texto decía "lo ven las tres apps iOS" y era
+            falso: OrderSummary es superficie de Dashboard y admin. Las
+            apps lo reciben por `OrderAccepted` y `OrderStatusUpdate`.
         freight_amount:
           type: number
           format: double
