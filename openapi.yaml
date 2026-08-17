@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.41.0
+  version: 0.41.1
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -51,6 +51,68 @@ info:
     calcule "hoy" con el reloj UTC —por ejemplo con `toISOString()`— manda
     el día equivocado durante esa franja y reproduce el problema desde su
     lado, aunque el servidor esté bien.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.41.1 — LO QUE v0.41.0 DIO POR OBVIO
+    ══════════════════════════════════════════════════════════════════════════
+
+    Cinco huecos que v0.41.0 dejó, todos encontrados por los agentes al leerla
+    antes de construir. Ninguno cambia el diseño: completan lo que estaba
+    supuesto y no dicho.
+
+    ★ 1. `GET /catalog-images/{image_id}` — LAS IMÁGENES NECESITAN SU PROPIA
+      RUTA DE LECTURA
+      v0.41.0 dijo que `image_url` es opaca y no dijo a dónde apunta, dando
+      por hecho que serviría el mecanismo de las fotos de evidencia.
+      NO SIRVE: `GET /evidence-photos/{id}` está restringido a ADMIN,
+      APROBADOR_PAGOS y APROBADOR_CREDITOS, así que un token VENDEDOR recibe
+      403 y las apps se quedarían sin poder ver ninguna imagen del catálogo.
+
+      La ruta nueva la puede leer CUALQUIER rol autenticado — las tres apps y
+      el Dashboard la necesitan, y una foto de producto no es un dato
+      sensible.
+
+    ★ 2. `GET /admin/catalog/{item_code}` — UN ÍTEM SUELTO
+      La ficha editable no tenía de dónde leer un ítem: solo existía la
+      página. Sin esto, la pantalla queda alimentada por la fila que
+      casualmente tenga cargada, y un refresco la deja sin nada. Toda entidad
+      editable de esta API tiene su ruta de detalle; esta faltaba.
+
+    ★ 3. TAMAÑO MÁXIMO Y NORMALIZACIÓN DE LA IMAGEN
+      v0.41.0 mencionaba un 400 "excede el tamaño máximo" sin decir cuánto.
+      Descubrir el límite a fuerza de rechazos, cargando 539 fotos de a una,
+      es caro y evitable.
+
+      Máximo de subida: 5 MB de imagen decodificada.
+
+      ★ Y EL SERVIDOR NORMALIZA LO QUE GUARDA, que es lo que faltaba pensar:
+      re-codifica a un lado mayor de 1024 px. Sin eso, 539 fotos de cámara a
+      3 MB serían más de un giga que CADA app se baja por red móvil para
+      llenar su catálogo offline. Lo que se acepta al subir y lo que se sirve
+      no tienen por qué ser lo mismo, y acá deliberadamente no lo son.
+
+      La versión de la URL se deriva del contenido YA NORMALIZADO — si
+      derivara del original, dos subidas que normalizan al mismo resultado
+      producirían URLs distintas para bytes idénticos.
+
+    ★ 4. `DELETE` DE LA IMAGEN DEVUELVE EL ÍTEM, NO 204
+      Con 204 sin cuerpo, la pantalla tenía que CONSTRUIR el estado
+      resultante (`image_url: null`) en vez de usar el que llegó — el único
+      punto de todo el bloque donde el cliente arma estado. Es chico y sería
+      correcto, pero es exactamente la excepción que después se generaliza.
+      Ahora devuelve 200 con el `AdminCatalogItem`, igual que `PATCH` y `PUT`.
+
+    ★ 5. UN CAMBIO EN UN CAMPO PROPIO DEL WMS TIENE QUE APARECER EN EL DELTA
+      v0.41.0 exigió que un ítem oculto siguiera viajando en
+      `GET /sync/catalog` con la bandera en `false`. Faltaba la otra mitad:
+      ese endpoint entrega solo lo modificado desde `since`, así que si
+      cambiar la bandera no marca al ítem como modificado, la ocultación no
+      viaja igual — el ítem no se omite, simplemente nunca vuelve a aparecer.
+
+      El resultado es idéntico al que la regla quería evitar, alcanzado por
+      otra vía. Queda dicho como garantía y no como mecanismo: cambiar
+      `visible_in_catalog`, la imagen, o cualquier campo propio del WMS hace
+      que el ítem aparezca en el siguiente delta.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.41.0 — LA FICHA DEL ÍTEM
@@ -2665,6 +2727,15 @@ paths:
         Solo llegan ítems con SellItem='Y' en SAP.
         Un precio de 0 es VÁLIDO y el ítem ES ORDENABLE (muestra / publicidad).
         `available` viene YA CALCULADO por el middleware.
+
+        ★ GARANTÍA DE v0.41.1 — UN CAMBIO EN UN CAMPO PROPIO DEL WMS APARECE
+        EN EL DELTA. Este endpoint entrega solo lo modificado desde `since`,
+        y los campos del WMS (`visible_in_catalog`, la imagen) no los mueve el
+        refresco de SAP. Si cambiarlos no marcara al ítem como modificado, la
+        ocultación no viajaría nunca: el ítem no se omite, simplemente no
+        vuelve a aparecer — mismo resultado que la regla quería evitar,
+        alcanzado por otra vía. Es una garantía del servidor, no un mecanismo
+        que el cliente deba conocer.
       parameters:
         - $ref: '#/components/parameters/Since'
       responses:
@@ -4561,6 +4632,41 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
 
+  /catalog-images/{image_id}:
+    get:
+      tags: [sync-down]
+      summary: La imagen de un ítem del catálogo
+      description: >
+        ★ NUEVO en v0.41.1. La lee CUALQUIER rol autenticado — las tres apps
+        y el Dashboard la necesitan, y una foto de producto no es un dato
+        sensible.
+
+        ★ POR QUÉ NO REUSA `GET /evidence-photos/{id}`: ese endpoint está
+        restringido a ADMIN, APROBADOR_PAGOS y APROBADOR_CREDITOS, así que un
+        token VENDEDOR recibe 403 y las apps se quedarían sin ver ninguna
+        imagen del catálogo. Es el mismo mecanismo de almacenamiento, con
+        otra puerta.
+
+        ⚠️ NO CONSTRUYAS ESTA URL. Usá `image_url` tal como viene en el ítem:
+        lleva una versión derivada del contenido normalizado y cambia cuando
+        cambia la imagen, que es lo que hace que un cliente con el catálogo
+        cacheado traiga la foto nueva.
+      parameters:
+        - name: image_id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Los bytes de la imagen
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
+            image/png:
+              schema: { type: string, format: binary }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /admin/catalog:
     get:
       tags: [admin]
@@ -4655,6 +4761,27 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /admin/catalog/{item_code}:
+    get:
+      tags: [admin]
+      summary: Un ítem del catálogo
+      description: >
+        ★ NUEVO en v0.41.1. REQUIERE rol ADMIN. Devuelve el ítem con todo lo
+        que trae la página, para que la ficha editable no dependa de la fila
+        que la grilla tenga cargada — un refresco la dejaría sin nada.
+      parameters:
+        - name: item_code
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: El ítem
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminCatalogItem' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
     patch:
       tags: [admin]
       summary: Ajustes del WMS sobre un ítem
@@ -4754,6 +4881,18 @@ paths:
                   type: string
                   description: >
                     La imagen codificada en base64, sin prefijo de tipo MIME.
+
+                    ★ v0.41.1 — MÁXIMO 5 MB de imagen DECODIFICADA. El cuerpo
+                    de la petición pesa ~33% más por el base64.
+
+                    El formato se valida por la firma de los bytes, nunca por
+                    `filename` ni por un tipo declarado.
+
+                    ★ EL SERVIDOR NORMALIZA LO QUE GUARDA: re-codifica a un
+                    lado mayor de 1024 px. Lo que se acepta al subir y lo que
+                    se sirve NO son lo mismo, a propósito — 539 fotos de
+                    cámara sin normalizar serían más de un giga que cada app
+                    se baja por red móvil para llenar su catálogo offline.
                 filename:
                   type: string
                   nullable: true
@@ -4785,15 +4924,24 @@ paths:
         ★ NUEVO en v0.41.0. REQUIERE rol ADMIN. Deja `image_url` en `null` y
         los clientes vuelven al placeholder.
 
-        Idempotente: borrar la imagen de un ítem que no tiene devuelve 204
+        Idempotente: borrar la imagen de un ítem que no tiene devuelve 200
         igual. El 404 queda para el ítem que no existe, que es otra cosa.
+
+        ★ v0.41.1 — devuelve el ítem, no 204 sin cuerpo. Con 204 la pantalla
+        tenía que CONSTRUIR el estado resultante en vez de usar el que llegó,
+        y era el único punto del bloque donde el cliente arma estado. Chico,
+        correcto, y exactamente la excepción que después se generaliza.
       parameters:
         - name: item_code
           in: path
           required: true
           schema: { type: string }
       responses:
-        '204': { description: Imagen borrada (o no había) }
+        '200':
+          description: Imagen borrada (o no había)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminCatalogItem' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
