@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.37.3
+  version: 0.38.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -51,6 +51,67 @@ info:
     calcule "hoy" con el reloj UTC —por ejemplo con `toISOString()`— manda
     el día equivocado durante esa franja y reproduce el problema desde su
     lado, aunque el servidor esté bien.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.38.0 — ORDENAR Y FILTRAR POR FECHA LA GRILLA DE ÓRDENES
+    ══════════════════════════════════════════════════════════════════════════
+
+    Sale de uso real del Dashboard. `GET /admin/orders` gana rango de fechas
+    de recepción y ordenamiento explícito.
+
+    ★ POR QUÉ ES CONTRATO Y NO PANTALLA
+      La grilla está PAGINADA EN EL SERVIDOR. Ordenar o filtrar por fecha en
+      el cliente operaría sobre la página cargada, no sobre el conjunto:
+      "la orden más antigua" sería la más antigua DE ESA PÁGINA. Se ve
+      funcionando y está mal, que es la peor forma de estar mal.
+
+      Es la misma trampa que ya mordió en el carrito: el aviso de "cliente
+      fuera de la cartera del vendedor" comparaba contra la lista cargada, y
+      cuando esa lista pasó a ser una página filtrada por la búsqueda, un
+      cliente ausente dejó de significar nada.
+
+    ★ RANGO DE FECHAS — `received_from` / `received_to`
+      Fechas SIN hora, ambos límites INCLUSIVOS, resueltos contra el día
+      calendario de **Nueva York** como manda la regla global del principio
+      de este documento. Un cliente que calcule "hoy" con el reloj UTC manda
+      el día equivocado durante las últimas horas de cada jornada — que es
+      justo cuando la operación está más activa.
+
+    ★ ORDENAMIENTO — `sort_by` / `sort_dir`
+      `sort_by`: `received_at` (default) · `order_number` · `status`.
+      `sort_dir`: `desc` (default) · `asc`.
+
+      Los defaults reproducen el comportamiento actual, así que un cliente
+      que no mande nada ve exactamente lo mismo que hoy.
+
+      `status` NO ordena alfabéticamente: usa el ORDEN DEL CICLO DE VIDA tal
+      como está declarado el enum (SINCRONIZADA → RETENIDA_CARTERA →
+      APROBADA → RECHAZADA). Alfabéticamente, APROBADA quedaría antes que
+      RETENIDA_CARTERA y lo que el admin necesita atender terminaría
+      enterrado en el medio. Ordenar por estado sirve para juntar lo que
+      espera decisión, no para respetar el diccionario.
+
+    ★ ESTABILIDAD DE LA PAGINACIÓN, que es la parte fácil de olvidar
+      Todo ordenamiento lleva un DESEMPATE determinista. Sin él, ordenar por
+      un campo con muchos empates —`status` tiene cuatro valores para todas
+      las órdenes— deja el orden de las filas empatadas a criterio del motor,
+      y entre dos consultas la misma orden puede aparecer en la página 1 y en
+      la 2, o en ninguna. El desempate es `received_at` descendente y después
+      `order_number`, que es único.
+
+    ★ LO QUE NO SE EXTENDIÓ, a propósito
+      `GET /my-orders` NO recibe estos parámetros. No es un olvido: nadie los
+      pidió ahí y esa pantalla sigue siendo usable sin ellos. Queda dicho
+      para que no se lea como el hueco de "actualicé la lista y no el
+      detalle" que ya se repitió cuatro veces. Si se piden, se agregan igual.
+
+    ★ Y LOS FILTROS DE LA PANTALLA DE BORRADORES NO ESTÁN ACÁ
+      Buscar un borrador por nombre o por fecha de creación NO necesita
+      contrato: `GET /order-drafts` no está paginado y `OrderDraftSummary` ya
+      trae `title` y `created_at`. Filtrar en el cliente es correcto ahí
+      porque la lista llega entera — exactamente lo contrario de la grilla de
+      órdenes. Techo conocido: si algún día esa lista crece y se pagina,
+      esos filtros tienen que mudarse al servidor el mismo día.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.37.3 — LOS MONTOS LLEGAN A LA APP DEL VENDEDOR DE VERDAD
@@ -4027,6 +4088,66 @@ paths:
           in: query
           schema: { $ref: '#/components/schemas/OrderStatus' }
           description: ★ v0.4.0 — filtrar por estado.
+        - name: received_from
+          in: query
+          required: false
+          schema: { type: string, format: date }
+          description: >
+            ★ NUEVO en v0.38.0. Solo órdenes recibidas EN o DESPUÉS de este
+            día. Límite INCLUSIVO.
+
+            Fecha sin hora, resuelta contra el día calendario de
+            **Nueva York** (`America/New_York`), NUNCA contra el día UTC —
+            ver la regla global al principio de este documento. `received_at`
+            es un instante en UTC; el día se deriva convirtiendo a Nueva York
+            primero.
+        - name: received_to
+          in: query
+          required: false
+          schema: { type: string, format: date }
+          description: >
+            ★ NUEVO en v0.38.0. Solo órdenes recibidas EN o ANTES de este
+            día. Límite INCLUSIVO — `received_to=2026-08-13` incluye todo el
+            13 hasta las 23:59:59 de Nueva York, no se corta a la medianoche
+            UTC (que en Nueva York son las 20:00 y dejaría afuera las horas
+            más activas del día).
+
+            Si `received_to` es anterior a `received_from`, 400.
+        - name: sort_by
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [received_at, order_number, status]
+            default: received_at
+          description: >
+            ★ NUEVO en v0.38.0. Por qué campo ordenar. El default reproduce
+            el comportamiento actual, así que un cliente que no lo manda ve
+            lo mismo que hoy.
+
+            `status` NO ordena alfabéticamente: usa el ORDEN DEL CICLO DE
+            VIDA tal como está declarado el enum OrderStatus (SINCRONIZADA →
+            RETENIDA_CARTERA → APROBADA → RECHAZADA). Alfabéticamente
+            APROBADA quedaría antes que RETENIDA_CARTERA, y lo que el admin
+            necesita atender terminaría enterrado en el medio.
+        - name: sort_dir
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+          description: >
+            ★ NUEVO en v0.38.0. Dirección del ordenamiento.
+
+            ⚠️ DESEMPATE OBLIGATORIO: todo ordenamiento lleva un criterio
+            secundario determinista — `received_at` descendente y después
+            `order_number`, que es único. Sin él, ordenar por un campo con
+            muchos empates (`status` tiene cuatro valores para todas las
+            órdenes) deja el orden de las filas empatadas a criterio del
+            motor, y sobre una lista PAGINADA eso significa que entre dos
+            consultas la misma orden puede aparecer en la página 1 y en la 2,
+            o en ninguna de las dos.
       responses:
         '200':
           description: Página de órdenes
