@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.39.0
+  version: 0.40.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -51,6 +51,58 @@ info:
     calcule "hoy" con el reloj UTC —por ejemplo con `toISOString()`— manda
     el día equivocado durante esa franja y reproduce el problema desde su
     lado, aunque el servidor esté bien.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.40.0 — EL CATÁLOGO SE PUEDE RECORRER
+    ══════════════════════════════════════════════════════════════════════════
+
+    Primera mitad del bloque de catálogo. `GET /admin/catalog` gana filtro por
+    categoría y ordenamiento, y el ítem gana `out_of_stock`. La ficha editable
+    —imágenes, visibilidad propia del WMS, venta controlada— va aparte.
+
+    ★ POR QUÉ EL FILTRO Y EL SORT SON CONTRATO
+      Mismo motivo que la grilla de órdenes en v0.38.0: `/admin/catalog` está
+      PAGINADO EN EL SERVIDOR. Filtrar u ordenar en el cliente operaría sobre
+      la página cargada — "el ítem con menos disponible" sería el menor DE ESA
+      PÁGINA. Se ve funcionando y está mal.
+
+      `category` ya viajaba en el ítem, así que el dato no faltaba: faltaba
+      poder pedirlo.
+
+    ★ Y LA RESPUESTA TRAE `categories`
+      Sin eso el selector de categorías no se puede poblar: derivarlo de la
+      página cargada mostraría solo las categorías que casualmente aparecen en
+      esas 25 filas. Es la lista COMPLETA y NO cambia con los filtros
+      aplicados — si se recortara al filtro activo, elegir una categoría
+      dejaría al selector sin las demás y no habría cómo volver.
+
+    ★ `out_of_stock` — LA REGLA LA RESUELVE EL SERVIDOR
+      `available <= 0` O `stock <= 0`. Viaja resuelta y no como regla a
+      implementar, por lo mismo que `total_amount` en v0.37.3: tres clientes
+      calculando la misma condición por separado son tres chances de que
+      divergan, y nadie compara.
+
+      ⚠️ QUÉ HACE, Y QUÉ NO: el cliente NO ofrece agregar al carrito un ítem
+      con `out_of_stock = true`, y lo muestra marcado. Pero el SERVIDOR NO
+      RECHAZA un pedido que lo incluya, y eso es deliberado: la app del
+      vendedor trabaja offline sobre el catálogo sincronizado, y el stock de
+      SAP cambia durante el día. Rechazar al crear le daría al vendedor en
+      ruta rechazos por ítems que tenía en stock al sincronizar — cuando el
+      sistema resuelve el faltante en el alistamiento a propósito. La regla
+      protege de pedir a ciegas, no castiga al que llegó tarde.
+
+    ★ `image_url` EN `AdminCatalogItem`
+      Estaba en `CatalogItem` (lo que ven las apps) y NO en el schema del
+      Dashboard, o sea que la pantalla desde donde se van a administrar las
+      imágenes no podía ver la que el ítem ya tiene. Cobertura real hoy: cero
+      de 539 ítems. Poblarlo es la segunda mitad del bloque.
+
+    ★ DESEMPATE, igual que en v0.38.0
+      Todo ordenamiento lleva `item_code` como criterio secundario, que es
+      único. Sin él, ordenar por `category` o por `stock` —donde los empates
+      son masivos— deja el orden de las filas empatadas a criterio del motor,
+      y sobre una lista paginada la misma fila puede aparecer en dos páginas o
+      en ninguna.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.39.0 — DATO GUARDADO SIN CAMINO DE LECTURA
@@ -4423,6 +4475,45 @@ paths:
         - name: only_without_price
           in: query
           schema: { type: boolean, default: false }
+        - name: category
+          in: query
+          required: false
+          schema: { type: string }
+          description: >
+            ★ NUEVO en v0.40.0. Filtra por categoría exacta (no búsqueda
+            parcial — para eso está `search`). El valor debe ser uno de los
+            que devuelve `categories` en la respuesta.
+
+            Una categoría que no existe devuelve una página vacía, no un 400:
+            el catálogo cambia con los datos maestros de SAP y un valor que
+            era válido ayer puede no estarlo hoy.
+        - name: sort_by
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [item_code, name, stock, committed, available, category]
+            default: item_code
+          description: >
+            ★ NUEVO en v0.40.0. Por qué campo ordenar. El default reproduce el
+            comportamiento actual, así que un cliente que no lo manda ve lo
+            mismo que hoy.
+        - name: sort_dir
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: asc
+          description: >
+            ★ NUEVO en v0.40.0. Dirección del ordenamiento.
+
+            ⚠️ DESEMPATE OBLIGATORIO: todo ordenamiento lleva `item_code` como
+            criterio secundario, que es único. Sin él, ordenar por `category`
+            o por `stock` —donde los empates son masivos— deja el orden de las
+            filas empatadas a criterio del motor, y sobre una lista PAGINADA
+            eso significa que la misma fila puede aparecer en dos páginas o en
+            ninguna.
       responses:
         '200':
           description: Página de ítems
@@ -4435,6 +4526,19 @@ paths:
                   page_size: { type: integer }
                   total: { type: integer }
                   without_price_count: { type: integer }
+                  categories:
+                    type: array
+                    items: { type: string }
+                    description: >
+                      ★ NUEVO en v0.40.0. TODAS las categorías del catálogo,
+                      ordenadas, para poblar el selector del filtro.
+
+                      NO se recorta a los filtros aplicados, a propósito: si
+                      devolviera solo las de la página o las del filtro
+                      activo, elegir una categoría dejaría al selector sin las
+                      demás y no habría cómo volver. Y derivarla de la página
+                      cargada mostraría solo las que casualmente aparecen en
+                      esas 25 filas.
                   items:
                     type: array
                     items: { $ref: '#/components/schemas/AdminCatalogItem' }
@@ -9714,6 +9818,25 @@ components:
         has_price_3: { type: boolean }
         stock: { type: number, format: double }
         available: { type: number, format: double }
+        out_of_stock:
+          type: boolean
+          description: >
+            ★ NUEVO en v0.40.0. `available <= 0` O `stock <= 0`, resuelto por
+            el SERVIDOR.
+
+            Viaja resuelto y no como regla a implementar: tres clientes
+            calculando la misma condición por separado son tres chances de que
+            divergan, y nadie las compara. Mismo criterio que `total_amount`
+            desde v0.37.3.
+
+            ⚠️ QUÉ HACE Y QUÉ NO: el cliente no debe ofrecer agregar al
+            carrito un ítem con `true`, y debe mostrarlo marcado. Pero el
+            servidor NO rechaza un pedido que lo incluya, y es deliberado: la
+            app del vendedor trabaja offline sobre el catálogo sincronizado y
+            el stock de SAP cambia durante el día. Rechazar al crear daría
+            rechazos al vendedor en ruta por ítems que tenía en stock al
+            sincronizar, cuando el sistema resuelve el faltante en el
+            alistamiento a propósito.
         image_url: { type: string }
         active: { type: boolean }
 
@@ -10483,6 +10606,36 @@ components:
         stock: { type: number, format: double }
         committed: { type: number, format: double }
         available: { type: number, format: double }
+        out_of_stock:
+          type: boolean
+          description: >
+            ★ NUEVO en v0.40.0. `available <= 0` O `stock <= 0`, resuelto por
+            el SERVIDOR.
+
+            Viaja resuelto y no como regla a implementar: tres clientes
+            calculando la misma condición por separado son tres chances de que
+            divergan, y nadie las compara. Mismo criterio que `total_amount`
+            desde v0.37.3.
+
+            ⚠️ QUÉ HACE Y QUÉ NO: el cliente no debe ofrecer agregar al
+            carrito un ítem con `true`, y debe mostrarlo marcado. Pero el
+            servidor NO rechaza un pedido que lo incluya, y es deliberado: la
+            app del vendedor trabaja offline sobre el catálogo sincronizado y
+            el stock de SAP cambia durante el día. Rechazar al crear daría
+            rechazos al vendedor en ruta por ítems que tenía en stock al
+            sincronizar, cuando el sistema resuelve el faltante en el
+            alistamiento a propósito.
+        image_url:
+          type: string
+          nullable: true
+          description: >
+            ★ NUEVO en v0.40.0. La imagen del ítem, la misma que ven las apps
+            por `CatalogItem.image_url`.
+
+            Estaba solo en el schema de las apps, así que la pantalla del
+            Dashboard desde donde se van a administrar las imágenes no podía
+            ver la que el ítem ya tiene. Cobertura real hoy: cero de 539
+            ítems — poblarlo es la segunda mitad de este bloque.
         active: { type: boolean }
 
     AdminClient:
