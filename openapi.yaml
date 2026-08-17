@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.40.0
+  version: 0.41.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -51,6 +51,106 @@ info:
     calcule "hoy" con el reloj UTC —por ejemplo con `toISOString()`— manda
     el día equivocado durante esa franja y reproduce el problema desde su
     lado, aunque el servidor esté bien.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.41.0 — LA FICHA DEL ÍTEM
+    ══════════════════════════════════════════════════════════════════════════
+
+    Segunda mitad del bloque de catálogo: el Dashboard pasa a poder EDITAR el
+    ítem. Tres capacidades nuevas y una definición que faltaba escribir.
+
+    ★ 1. IMAGEN DEL ÍTEM — subir, reemplazar y borrar
+      `PUT` y `DELETE /admin/catalog/{item_code}/image`, y la subida va en
+      base64 en el cuerpo, igual que `POST /evidence-photos` desde v0.17.2.
+      No se inventa un mecanismo nuevo: los clientes ya saben hacer esto.
+
+      Origen decidido: se cargan UNA POR UNA desde el Dashboard. Las que hay
+      hoy están en una carpeta local con nombres que no corresponden al código
+      del ítem, así que no hay emparejamiento automático posible y una carga
+      masiva sería adivinanza. SAP no las tiene y Attain no se toca.
+
+      ⚠️ `image_url` CAMBIA CUANDO CAMBIA LA IMAGEN. La URL lleva una versión
+      derivada del contenido, así que reemplazar la foto de un ítem produce
+      una URL distinta. Es lo que hace que las apps —que guardan el catálogo
+      sin conexión— muestren la nueva: con una URL estable, un cliente que ya
+      cacheó la vieja se quedaría con ella para siempre y nadie entendería por
+      qué. Los clientes tratan `image_url` como opaca y no la construyen.
+
+      `only_without_image` en `GET /admin/catalog`, hermano del
+      `only_without_price` que ya existía: con 539 ítems y cobertura cero, sin
+      una forma de ver qué falta no hay manera de saber por dónde va la carga.
+
+    ★ 2. VISIBILIDAD PROPIA DEL WMS — `visible_in_catalog`
+      Distinta de `active`, que es la bandera de SAP y es dato maestro. El WMS
+      no escribe maestros de SAP, y pisar ese campo confundiría "inactivo en
+      SAP" con "escondido por decisión comercial". Son dos hechos distintos y
+      se guardan aparte.
+
+      ⚠️ UN ÍTEM OCULTO NO DESAPARECE DE `GET /sync/catalog`: viaja con
+      `visible_in_catalog = false`. Omitirlo parece lo natural y sería un
+      error — ese endpoint es un DELTA con `since`, así que un ítem que
+      simplemente deja de aparecer no le dice nada al cliente, que lo
+      conserva en su base local para siempre. La ocultación tiene que VIAJAR
+      para poder aplicarse.
+
+      El Dashboard sigue viendo todos los ítems, ocultos incluidos — si no,
+      no habría forma de volver a mostrarlos.
+
+    ★ 3. VENTA CONTROLADA — `controlled_sale` y `controlled_sale_limit`
+      Un tope de UNIDADES por vendedor sobre las ÓRDENES ABIERTAS de ese
+      ítem. No es un cupo por día ni por pedido: es exposición simultánea, y
+      se libera solo cuando las órdenes se cierran, sin que nadie reinicie
+      nada.
+
+      ORDEN ABIERTA = la misma definición que `committed` (ver abajo): no
+      RECHAZADA y todavía no facturada en SAP.
+
+      ⚠️ AVISA, NO BLOQUEA. El pedido entra igual. Decisión de negocio: el
+      control es de seguimiento comercial, no un portón de reparto de stock.
+      El servidor calcula el exceso AL CREAR el pedido y lo GUARDA ahí — no se
+      recalcula al leer, porque entonces el aviso cambiaría solo con el
+      tiempo y no diría nada sobre lo que pasó cuando se tomó el pedido.
+
+      Y el cupo NO VIAJA A LAS APPS. El aviso se ve únicamente en el pedido,
+      en el Dashboard, así que no hace falta mandar saldos por ítem controlado
+      en cada sincronización de cada dispositivo — que era, por lejos, la
+      parte más cara de este bloque.
+
+      Reparto lista/detalle, deliberado: `OrderSummary` lleva un booleano
+      —la grilla solo necesita saber cuáles marcar— y `OrderDetail` lleva el
+      desglose por ítem. Queda dicho para que no se lea como el hueco de
+      "actualicé la lista y no el detalle" que ya se repitió cuatro veces.
+
+    ★ 4. QUÉ ES `committed`, QUE NUNCA ESTUVO ESCRITO
+      `committed` y `available` viajaban sin descripción, y cada quien volvía
+      a deducir qué contaban. Se dedujo mal: la implementación sumaba TODAS
+      las líneas de pedido del ítem sin mirar el estado de la orden, así que
+      una orden rechazada restaba disponible para siempre y una ya facturada
+      se restaba dos veces —el stock de SAP ya había bajado por la factura y
+      la línea seguía contando—. Medido en dev: 10 ítems y 25 unidades
+      contadas dos veces, creciendo con cada factura.
+
+      LA DEFINICIÓN, y de ella salen todos los casos:
+      **`committed` no lleva la cuenta de lo vendido. Tapa el retraso entre
+      que algo se vende y que SAP se entera.**
+
+      `stock` es el número de SAP, y SAP no sabe nada de un pedido del WMS
+      hasta que se emite la factura. Entonces una línea cuenta mientras su
+      mercancía siga adentro del `stock` de SAP y todavía vaya a salir:
+
+        · RECHAZADA no cuenta — esa mercancía no va a salir nunca.
+        · FACTURADA deja de contar — el stock de SAP ya bajó; seguir
+          restando es contar dos veces la misma unidad.
+        · ENTREGADA SIN FACTURAR SIGUE contando — si no hay factura, el stock
+          de SAP no bajó y la ventana sigue abierta. No es una excepción: es
+          la regla aplicada.
+
+      No hace falta ninguna condición sobre los estados de entrega, porque
+      hay que facturar antes de asignar el driver: cuando la mercancía sale,
+      la orden ya está fuera del comprometido.
+
+      Techo conocido y aceptado: una orden que nunca se factura ni se rechaza
+      cuenta para siempre. Es residuo operativo, no un caso de diseño.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.40.0 — EL CATÁLOGO SE PUEDE RECORRER
@@ -4475,6 +4575,15 @@ paths:
         - name: only_without_price
           in: query
           schema: { type: boolean, default: false }
+        - name: only_without_image
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+          description: >
+            ★ NUEVO en v0.41.0. Solo ítems sin imagen cargada. Hermano de
+            `only_without_price`: con 539 ítems y las imágenes cargándose de
+            a una, sin una forma de ver qué falta no hay cómo saber por dónde
+            va la carga ni cuándo terminó.
         - name: category
           in: query
           required: false
@@ -4544,6 +4653,150 @@ paths:
                     items: { $ref: '#/components/schemas/AdminCatalogItem' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/catalog/{item_code}:
+    patch:
+      tags: [admin]
+      summary: Ajustes del WMS sobre un ítem
+      description: >
+        ★ NUEVO en v0.41.0. REQUIERE rol ADMIN.
+
+        Cambia SOLO datos propios del WMS. No toca ningún dato maestro de
+        SAP: nombre, categoría, precios, stock y `active` siguen viniendo del
+        espejo y son de solo lectura acá.
+
+        Campos omitidos = sin cambio. Mandar `null` en un campo nulable SÍ lo
+        borra, así que omitir y anular son cosas distintas a propósito.
+      parameters:
+        - name: item_code
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                visible_in_catalog:
+                  type: boolean
+                  description: >
+                    Si es `false`, el ítem deja de ofrecerse en el catálogo
+                    del vendedor. NO desaparece de `GET /sync/catalog`: viaja
+                    con este campo en `false` para que el cliente pueda
+                    quitarlo de su base local.
+                controlled_sale:
+                  type: boolean
+                  description: >
+                    Marca el ítem como de venta controlada. Si se pone en
+                    `true`, `controlled_sale_limit` pasa a ser obligatorio —
+                    un ítem controlado sin tope no controla nada (400
+                    `controlled_sale_limit_required`).
+                controlled_sale_limit:
+                  type: number
+                  format: double
+                  nullable: true
+                  description: >
+                    Tope de UNIDADES por vendedor sobre sus órdenes abiertas
+                    de este ítem. Debe ser mayor que 0 (400
+                    `invalid_controlled_sale_limit`).
+
+                    Cambiar el tope NO recalcula los avisos ya guardados en
+                    pedidos anteriores: esos dicen qué pasaba cuando se
+                    tomaron, y reescribirlos borraría el hecho.
+      responses:
+        '200':
+          description: Ítem actualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminCatalogItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/catalog/{item_code}/image:
+    put:
+      tags: [admin]
+      summary: Subir o reemplazar la imagen del ítem
+      description: >
+        ★ NUEVO en v0.41.0. REQUIERE rol ADMIN.
+
+        La imagen viaja en base64 en el cuerpo, igual que
+        `POST /evidence-photos` desde v0.17.2 — mismo mecanismo, que los
+        clientes ya saben usar.
+
+        Es un `PUT` y no un `POST` porque un ítem tiene UNA imagen: subirla
+        de nuevo REEMPLAZA la anterior, no acumula. Repetir la misma llamada
+        deja el mismo estado.
+
+        ⚠️ La `image_url` que devuelve es DISTINTA de la anterior, porque
+        lleva una versión derivada del contenido. Eso es lo que hace que las
+        apps, que guardan el catálogo sin conexión, muestren la nueva foto:
+        con una URL estable, el cliente que ya cacheó la vieja se quedaría
+        con ella. Los clientes tratan `image_url` como OPACA — la usan tal
+        cual, no la construyen ni la parsean.
+      parameters:
+        - name: item_code
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [image_base64]
+              properties:
+                image_base64:
+                  type: string
+                  description: >
+                    La imagen codificada en base64, sin prefijo de tipo MIME.
+                filename:
+                  type: string
+                  nullable: true
+                  description: >
+                    Nombre original, opcional y solo informativo. NO se usa
+                    para emparejar con el ítem: las imágenes de Dinas están
+                    en una carpeta con nombres que no corresponden al código,
+                    y el emparejamiento lo hace la persona al elegir el ítem.
+      responses:
+        '200':
+          description: Imagen guardada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminCatalogItem' }
+        '400':
+          description: >
+            Base64 inválido, formato de imagen no soportado, o excede el
+            tamaño máximo.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [admin]
+      summary: Borrar la imagen del ítem
+      description: >
+        ★ NUEVO en v0.41.0. REQUIERE rol ADMIN. Deja `image_url` en `null` y
+        los clientes vuelven al placeholder.
+
+        Idempotente: borrar la imagen de un ítem que no tiene devuelve 204
+        igual. El 404 queda para el ítem que no existe, que es otra cosa.
+      parameters:
+        - name: item_code
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '204': { description: Imagen borrada (o no había) }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /admin/clients:
     get:
@@ -9837,7 +10090,30 @@ components:
             rechazos al vendedor en ruta por ítems que tenía en stock al
             sincronizar, cuando el sistema resuelve el faltante en el
             alistamiento a propósito.
-        image_url: { type: string }
+        image_url:
+          type: string
+          nullable: true
+          description: >
+            ★ v0.41.0 — CAMBIA cuando cambia la imagen: lleva una versión
+            derivada del contenido, para que un cliente que guardó el
+            catálogo sin conexión traiga la nueva foto en vez de quedarse con
+            la cacheada. Tratala como OPACA.
+
+            `null` mientras el ítem no tenga imagen cargada: el cliente
+            muestra su placeholder, que es el estado real del dato y no un
+            error.
+        visible_in_catalog:
+          type: boolean
+          description: >
+            ★ NUEVO en v0.41.0. Decisión COMERCIAL del WMS, distinta de
+            `active`, que es la bandera de SAP y es dato maestro. Un ítem
+            puede estar activo en SAP y oculto por decisión, o al revés.
+
+            ⚠️ Un ítem oculto SIGUE VIAJANDO en `GET /sync/catalog`, con este
+            campo en `false`. Ese endpoint es un delta con `since`: un ítem
+            que simplemente dejara de aparecer no le diría nada al cliente,
+            que lo conservaría en su base local para siempre. La ocultación
+            tiene que viajar para poder aplicarse.
         active: { type: boolean }
 
     # ═══════════════ CLIENTE CON CARTERA (★ v0.4.0) ═══════════════
@@ -10481,6 +10757,23 @@ components:
 
               lines_subtotal − invoice_discount_amount + freight_amount
                 = total_amount
+        exceeds_controlled_sale:
+          type: boolean
+          description: >
+            ★ NUEVO en v0.41.0. Al menos un ítem de este pedido superó el
+            tope de venta controlada de su vendedor.
+
+            Se calcula AL CREAR el pedido y se guarda: no se recalcula al
+            leer. Si se recalculara, el aviso cambiaría solo con el paso del
+            tiempo —al cerrarse otras órdenes— y dejaría de decir qué pasaba
+            cuando se tomó este pedido, que es lo único que interesa.
+
+            AVISA, NO BLOQUEA: el pedido entró igual y nadie tiene que
+            aprobarlo. Es rastro, no compuerta.
+
+            La grilla solo necesita saber cuáles marcar; el desglose por ítem
+            está en `OrderDetail.controlled_sale_warnings`. El reparto es
+            deliberado, no un olvido.
         status: { $ref: '#/components/schemas/OrderStatus' }
         hold_reason:
           allOf:
@@ -10549,6 +10842,42 @@ components:
             lines:
               type: array
               items: { $ref: '#/components/schemas/OrderDetailLine' }
+            controlled_sale_warnings:
+              type: array
+              description: >
+                ★ NUEVO en v0.41.0. Un elemento por ítem de venta controlada
+                cuyo tope superó el vendedor al tomar este pedido. Vacío si
+                no hubo ninguno.
+
+                Es una FOTO del momento de la creación, guardada — no se
+                recalcula al leer. Por eso trae los números con los que se
+                decidió y no los de hoy.
+              items:
+                type: object
+                properties:
+                  item_code: { type: string }
+                  item_name: { type: string }
+                  limit:
+                    type: number
+                    format: double
+                    description: El tope vigente cuando se tomó el pedido.
+                  open_quantity_before:
+                    type: number
+                    format: double
+                    description: >
+                      Lo que el vendedor ya tenía en órdenes abiertas de este
+                      ítem ANTES de este pedido.
+                  quantity_in_order:
+                    type: number
+                    format: double
+                    description: Cuánto agregó este pedido.
+                  open_quantity_after:
+                    type: number
+                    format: double
+                    description: >
+                      La suma resultante. Es la que superó el tope — se
+                      manda ya sumada para que ninguna pantalla vuelva a
+                      hacer la cuenta.
 
     OrderDetailLine:
       type: object
@@ -10604,8 +10933,36 @@ components:
         has_price_3: { type: boolean }
         no_price_any_list: { type: boolean }
         stock: { type: number, format: double }
-        committed: { type: number, format: double }
-        available: { type: number, format: double }
+        committed:
+          type: number
+          format: double
+          description: >
+            ★ DEFINIDO en v0.41.0 (el campo existía sin descripción, y se
+            dedujo mal). Unidades de este ítem que ya están vendidas pero que
+            SAP todavía cuenta como stock.
+
+            NO lleva la cuenta de lo vendido: TAPA EL RETRASO entre que algo
+            se vende y que SAP se entera. `stock` es el número de SAP, y SAP
+            no sabe nada de un pedido del WMS hasta que se emite la factura.
+
+            Una línea de pedido cuenta acá mientras su mercancía siga adentro
+            del `stock` de SAP y todavía vaya a salir:
+              · RECHAZADA no cuenta — no va a salir nunca.
+              · FACTURADA deja de contar — el stock de SAP ya bajó, seguir
+                restando es contar dos veces la misma unidad.
+              · ENTREGADA SIN FACTURAR sigue contando — sin factura el stock
+                de SAP no bajó, la ventana sigue abierta.
+
+            No hay condición sobre los estados de entrega: hay que facturar
+            antes de asignar el driver, así que cuando la mercancía sale la
+            orden ya salió del comprometido.
+        available:
+          type: number
+          format: double
+          description: >
+            ★ DEFINIDO en v0.41.0. `stock − committed`. Puede ser negativo si
+            hay más comprometido que stock, y eso es un dato real, no un
+            error.
         out_of_stock:
           type: boolean
           description: >
@@ -10625,12 +10982,48 @@ components:
             rechazos al vendedor en ruta por ítems que tenía en stock al
             sincronizar, cuando el sistema resuelve el faltante en el
             alistamiento a propósito.
+        visible_in_catalog:
+          type: boolean
+          description: >
+            ★ NUEVO en v0.41.0. Decisión COMERCIAL del WMS, distinta de
+            `active`, que es la bandera de SAP y es dato maestro. Un ítem
+            puede estar activo en SAP y oculto por decisión, o al revés.
+
+            ⚠️ Un ítem oculto SIGUE VIAJANDO en `GET /sync/catalog`, con este
+            campo en `false`. Ese endpoint es un delta con `since`: un ítem
+            que simplemente dejara de aparecer no le diría nada al cliente,
+            que lo conservaría en su base local para siempre. La ocultación
+            tiene que viajar para poder aplicarse.
+        controlled_sale:
+          type: boolean
+          description: >
+            ★ NUEVO en v0.41.0. Ítem de venta controlada: hay un tope de
+            unidades por vendedor sobre sus órdenes abiertas.
+        controlled_sale_limit:
+          type: number
+          format: double
+          nullable: true
+          description: >
+            ★ NUEVO en v0.41.0. El tope, en UNIDADES, por vendedor, sobre la
+            suma de sus órdenes ABIERTAS de este ítem — misma definición de
+            "abierta" que `committed`: no RECHAZADA y todavía no facturada.
+
+            No es un cupo por día ni por pedido: es exposición simultánea, y
+            se libera solo cuando las órdenes se cierran.
+
+            `null` cuando `controlled_sale` es `false`. AVISA, NO BLOQUEA: el
+            pedido que lo excede entra igual y queda marcado.
         image_url:
           type: string
           nullable: true
           description: >
             ★ NUEVO en v0.40.0. La imagen del ítem, la misma que ven las apps
             por `CatalogItem.image_url`.
+
+            ★ v0.41.0 — CAMBIA cuando cambia la imagen: lleva una versión
+            derivada del contenido, para que un cliente que la haya cacheado
+            traiga la nueva. Tratala como OPACA: no la construyas ni la
+            parsees.
 
             Estaba solo en el schema de las apps, así que la pantalla del
             Dashboard desde donde se van a administrar las imágenes no podía
