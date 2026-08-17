@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.38.0
+  version: 0.39.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -51,6 +51,104 @@ info:
     calcule "hoy" con el reloj UTC —por ejemplo con `toISOString()`— manda
     el día equivocado durante esa franja y reproduce el problema desde su
     lado, aunque el servidor esté bien.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.39.0 — DATO GUARDADO SIN CAMINO DE LECTURA
+    ══════════════════════════════════════════════════════════════════════════
+
+    Dos huecos de la misma forma, encontrados por agentes al cerrar otro
+    trabajo. En los dos casos el dato existe, está bien guardado, y no hay
+    ninguna ruta que lo devuelva.
+
+    ══ 1. LA SOLICITUD DE CRÉDITO DECIDIDA PIERDE SU EXPEDIENTE ══
+
+    ★ EL HECHO QUE ORDENA TODO
+      La bandeja lista ÚNICAMENTE `PENDIENTE_APROBACION`. Una vez decidida,
+      la solicitud sale de la bandeja y el detalle queda como el ÚNICO camino
+      de lectura.
+
+      Entonces un campo que hoy solo está en la bandeja no es "una pantalla a
+      la que le falta un dato": es dato que se vuelve INALCANZABLE PARA
+      SIEMPRE en el momento de decidir. Es exactamente el argumento con el
+      que nació GetDetailAsync en v0.32.0 para `sap_documents`.
+
+    ★ `CreditRequestDetail` gana cuatro campos que ya existen en la bandeja
+      · `evidence_image_url` — la foto que justifica el crédito. Quien
+        audite después por qué se acreditaron 175 dólares no tenía de dónde
+        sacarla: guardada, sin vía de lectura.
+      · `reason` — en la modalidad SIN ítems no hay líneas, así que el motivo
+        a nivel solicitud es el único que existe. El detalle de una SIN_ITEMS
+        decidida decía cuánto y quién aprobó, pero no POR QUÉ. Y la cuenta
+        contable se resuelve DESDE el motivo, así que quien concilia contra
+        SAP necesita ver el par.
+      · `comments` — el texto libre de quien pidió. Después de decidir se veía
+        `decision_note` (lo que dijo el aprobador) y no lo que dijo el
+        solicitante: faltaba la mitad del expediente.
+      · `received_at` — el detalle traía `decided_at` pero no cuándo se
+        reportó. Sin los dos no se puede medir cuánto esperó una solicitud.
+
+    ★ `PendingCreditRequest` gana dos que solo estaban en el detalle
+      El aprobador decide DESDE LA BANDEJA, así que un dato que solo aparece
+      después no participa de la decisión.
+      · `created_by` — desde v0.33.2 una solicitud la puede cargar un ADMIN o
+        un APROBADOR_CREDITOS por cuenta del vendedor. La bandeja mostraba a
+        quién PERTENECE pero no quién la CARGÓ, y un aprobador aprobando algo
+        que él mismo cargó es un dato de control, no un detalle.
+      · `source_return_id` — procedencia. Si nació de una devolución de ruta
+        viene precargada del registro del driver y su foto; si no, la tipeó
+        alguien. Cambia cuánto hay que verificar antes de aprobar.
+
+    ★ LO QUE NO SE AGREGÓ, Y POR QUÉ — para que nadie lo "complete" después
+      · `client_statement` sigue SOLO en la bandeja, y es correcto. No está
+        guardado: se calcula en vivo contra el saldo actual del cliente.
+        Mostrarlo en el detalle de una solicitud vieja pondría el saldo de HOY
+        al lado de una decisión de hace un mes, que es peor que no mostrarlo.
+        Es lo que el aprobador necesita ANTES de decidir, y ahí está.
+      · `manual_amount` sigue solo en la bandeja: en la modalidad SIN ítems
+        coincide con `calculated_amount`, que el detalle ya trae. Agregarlo
+        sería completitud sin información.
+      · `status`, `gl_account_code`, `decided_by`, `decided_at`,
+        `decision_note`, `sap_documents` y `sap_credit_note_doc_num` siguen
+        solo en el detalle: son posteriores a la decisión y en la bandeja
+        serían siempre nulos o constantes.
+
+    ══ 2. EL DESGLOSE DEL TOTAL NO CIERRA SIN QUE EL CLIENTE CALCULE ══
+
+    ★ EL PROBLEMA
+      Desde v0.37.0 el pedido trae `invoice_discount_pct`, `freight_amount` y
+      `total_amount`. Pero para armar el desglose —subtotal → descuento →
+      flete → total— al cliente le faltaban dos números, y los estaba
+      calculando: sumaba los `line_total` para el subtotal, y el descuento lo
+      mostraba como PORCENTAJE PELADO porque no tenía el importe.
+
+      O sea que la resta no cierra leyendo hacia abajo: hay que sacar a mano
+      cuánto quitó ese 10% para que el subtotal explique el total. Y peor, es
+      aritmética de negocio del lado del cliente — el día que el servidor
+      redondee distinto de la suma de los `line_total`, la pantalla va a
+      mostrar una resta que no da y va a parecer un error del total oficial,
+      que es el número correcto.
+
+      Es la misma razón por la que v0.37.3 mandó `total_amount` en vez de
+      dejar que la app lo reconstruyera: dos aritméticas que deben coincidir y
+      que nadie compara terminan divergiendo.
+
+    ★ QUÉ CAMBIA
+      `OrderSummary`, `OrderAccepted` y `OrderStatusUpdate` ganan
+      `lines_subtotal` e `invoice_discount_amount`. Los tres mismos lugares
+      donde ya viajan los montos, para no crear una asimetría nueva.
+
+      Con eso el desglose queda ENTERAMENTE del servidor y se vuelve
+      verificable por cualquiera, incluido el chat de auditoría:
+
+        lines_subtotal − invoice_discount_amount + freight_amount = total_amount
+
+      Ningún cliente vuelve a sumar ni a multiplicar nada para mostrarlo.
+
+    ★ LO QUE NO CAMBIA
+      El payload del sincronizador NO los recibe. Ya tiene
+      `expected_line_total` por línea y `expected_doc_total`, y calcula su
+      propio total para contrastarlo contra el DocTotal de SAP — ese contraste
+      es su defensa y no debe apoyarse en un número que le manden ya hecho.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.38.0 — ORDENAR Y FILTRAR POR FECHA LA GRILLA DE ÓRDENES
@@ -8081,6 +8179,31 @@ components:
             ★ v0.17.6. Mismo enriquecimiento que PendingAccountPayment —
             contexto completo del cliente para decidir sin salir de la bandeja.
         received_at: { type: string, format: date-time }
+        created_by:
+          type: string
+          nullable: true
+          description: >
+            ★ NUEVO en v0.39.0. Quién CARGÓ la solicitud, que puede no ser el
+            vendedor al que pertenece: desde v0.33.2 la puede cargar un ADMIN
+            o un APROBADOR_CREDITOS por cuenta de él.
+
+            Está acá porque el aprobador decide DESDE LA BANDEJA, y un
+            aprobador aprobando algo que él mismo cargó es un dato de
+            control, no un detalle de auditoría posterior. NULL en solicitudes
+            anteriores a v0.33.2.
+        source_return_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            ★ NUEVO en v0.39.0. La devolución de ruta de la que nació la
+            solicitud, si nació de una.
+
+            Es PROCEDENCIA y cambia cuánto hay que verificar antes de
+            aprobar: si viene de una devolución, está precargada del registro
+            del driver y su foto; si no, la tipeó alguien a mano. Igual que
+            `created_by`, el aprobador lo necesita antes de decidir y no
+            después.
 
     InvoiceLine:
       type: object
@@ -8246,6 +8369,48 @@ components:
             ★ NUEVO en v0.33.0. La devolución de ruta de la que nació esta
             solicitud, si se creó precargándola desde una. NULL si nació de
             la app del vendedor o de la oficina sin devolución detrás.
+        reason:
+          allOf:
+            - $ref: '#/components/schemas/CreditRequestReason'
+          description: >
+            ★ NUEVO en v0.39.0. El motivo a nivel solicitud, el mismo que ya
+            devuelve la bandeja.
+
+            Antes solo estaba en la bandeja, que lista únicamente
+            PENDIENTE_APROBACION — así que al decidir se volvía inalcanzable.
+            En la modalidad SIN ítems no hay líneas, o sea que este es el
+            ÚNICO motivo que existe: el detalle de una solicitud decidida
+            decía cuánto y quién aprobó, pero no por qué. Y `gl_account_code`
+            se resuelve DESDE este campo, así que quien concilia contra SAP
+            necesita ver el par.
+        comments:
+          type: string
+          nullable: true
+          description: >
+            ★ NUEVO en v0.39.0. El texto libre de quien pidió el crédito.
+
+            Se veía `decision_note` —lo que dijo el aprobador— y no lo que
+            dijo el solicitante. Faltaba la mitad del expediente.
+        evidence_image_url:
+          type: string
+          nullable: true
+          description: >
+            ★ NUEVO en v0.39.0. La foto que justifica el crédito, la misma
+            que ve el aprobador en la bandeja.
+
+            Es el hueco más fuerte de los cuatro: quien audite después por
+            qué se acreditó un monto no tenía de dónde sacar la evidencia —
+            estaba guardada y sin ninguna vía de lectura. Se sirve con
+            GET /evidence-photos/{id}, igual que desde la bandeja.
+        received_at:
+          type: string
+          format: date-time
+          description: >
+            ★ NUEVO en v0.39.0. Cuándo se reportó la solicitud.
+
+            El detalle traía `decided_at` pero no esto, así que no había
+            forma de medir cuánto esperó una solicitud — que es justamente
+            de lo que se queja la operación.
         invoice_doc_num:
           type: string
           nullable: true
@@ -9992,6 +10157,35 @@ components:
           description: >
             ★ NUEVO en v0.37.3. Flete cobrado. Misma razón que el anterior.
             Null si no hubo.
+        lines_subtotal:
+          type: number
+          format: double
+          nullable: true
+          description: >
+            ★ NUEVO en v0.39.0. Suma de los totales de línea, ANTES del
+            descuento de documento y del flete, calculada por el SERVIDOR.
+
+            Viaja para que el cliente no la sume por su cuenta. Sumar
+            `line_total` parece inofensivo, pero es aritmética de negocio del
+            lado del cliente: el día que el servidor redondee distinto de esa
+            suma, la pantalla muestra una resta que no da y parece un error
+            del total oficial, que es el número correcto.
+        invoice_discount_amount:
+          type: number
+          format: double
+          nullable: true
+          description: >
+            ★ NUEVO en v0.39.0. Cuánto DINERO quitó el descuento de
+            documento. Null si no hubo descuento.
+
+            Sin esto el cliente solo podía mostrar el porcentaje pelado, y el
+            desglose no cerraba leyendo hacia abajo — había que calcular a
+            mano cuánto quitó ese porcentaje. Con este campo el desglose es
+            enteramente del servidor y su invariante es verificable por
+            cualquiera:
+
+              lines_subtotal − invoice_discount_amount + freight_amount
+                = total_amount
         received_at: { type: string, format: date-time }
 
     # ═══════════════ ESTADO DE LA ORDEN, SYNC-DOWN (★ v0.4.1) ═══════════════
@@ -10037,6 +10231,35 @@ components:
           nullable: true
           description: >
             ★ NUEVO en v0.37.3. Misma razón que el anterior. Null si no hubo.
+        lines_subtotal:
+          type: number
+          format: double
+          nullable: true
+          description: >
+            ★ NUEVO en v0.39.0. Suma de los totales de línea, ANTES del
+            descuento de documento y del flete, calculada por el SERVIDOR.
+
+            Viaja para que el cliente no la sume por su cuenta. Sumar
+            `line_total` parece inofensivo, pero es aritmética de negocio del
+            lado del cliente: el día que el servidor redondee distinto de esa
+            suma, la pantalla muestra una resta que no da y parece un error
+            del total oficial, que es el número correcto.
+        invoice_discount_amount:
+          type: number
+          format: double
+          nullable: true
+          description: >
+            ★ NUEVO en v0.39.0. Cuánto DINERO quitó el descuento de
+            documento. Null si no hubo descuento.
+
+            Sin esto el cliente solo podía mostrar el porcentaje pelado, y el
+            desglose no cerraba leyendo hacia abajo — había que calcular a
+            mano cuánto quitó ese porcentaje. Con este campo el desglose es
+            enteramente del servidor y su invariante es verificable por
+            cualquiera:
+
+              lines_subtotal − invoice_discount_amount + freight_amount
+                = total_amount
         decision_note:
           type: string
           nullable: true
@@ -10106,6 +10329,35 @@ components:
           description: >
             ★ NUEVO en v0.37.0. Flete cobrado. Null si no hubo. Misma razón
             que el anterior.
+        lines_subtotal:
+          type: number
+          format: double
+          nullable: true
+          description: >
+            ★ NUEVO en v0.39.0. Suma de los totales de línea, ANTES del
+            descuento de documento y del flete, calculada por el SERVIDOR.
+
+            Viaja para que el cliente no la sume por su cuenta. Sumar
+            `line_total` parece inofensivo, pero es aritmética de negocio del
+            lado del cliente: el día que el servidor redondee distinto de esa
+            suma, la pantalla muestra una resta que no da y parece un error
+            del total oficial, que es el número correcto.
+        invoice_discount_amount:
+          type: number
+          format: double
+          nullable: true
+          description: >
+            ★ NUEVO en v0.39.0. Cuánto DINERO quitó el descuento de
+            documento. Null si no hubo descuento.
+
+            Sin esto el cliente solo podía mostrar el porcentaje pelado, y el
+            desglose no cerraba leyendo hacia abajo — había que calcular a
+            mano cuánto quitó ese porcentaje. Con este campo el desglose es
+            enteramente del servidor y su invariante es verificable por
+            cualquiera:
+
+              lines_subtotal − invoice_discount_amount + freight_amount
+                = total_amount
         status: { $ref: '#/components/schemas/OrderStatus' }
         hold_reason:
           allOf:
