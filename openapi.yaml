@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.43.1
+  version: 0.44.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -51,6 +51,62 @@ info:
     calcule "hoy" con el reloj UTC —por ejemplo con `toISOString()`— manda
     el día equivocado durante esa franja y reproduce el problema desde su
     lado, aunque el servidor esté bien.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.44.0 — EXPORTAR PARADAS ANTES DE ARMAR EL CAMIÓN
+    ══════════════════════════════════════════════════════════════════════════
+
+    `POST /admin/route-export` — las mismas paradas que
+    `/admin/trucks/{truck_id}/route-export`, pero para un conjunto de órdenes
+    SELECCIONADAS que todavía no están en ningún camión.
+
+    ★ PARA QUÉ — Y PARA QUÉ NO
+      Sirve para UNA sola cosa: llevar las direcciones a un software de mapas
+      externo y **ver distancias** antes de decidir qué órdenes van juntas en
+      un camión. Nada más.
+
+      Hoy ese archivo sólo se puede bajar cuando las órdenes ya están
+      montadas y el camión confirmado — o sea, después de haber tomado la
+      decisión que el archivo ayudaría a tomar.
+
+      ⚠️ NO ES PARA ORDENAR PARADAS. El orden de paradas sigue siendo
+      exactamente lo que es hoy: parte de lo que pasa DESPUÉS de montar las
+      órdenes en un camión, con `route-export` / `route-import` /
+      `/route` del camión, y no cambia en nada. Este endpoint no participa de
+      eso, no devuelve secuencia y no recibe ninguna de vuelta.
+
+      Queda dicho así de explícito porque el archivo es idéntico, y un
+      archivo idéntico invita a suponer que el proceso también lo es.
+
+    ★ ES EL MISMO ARCHIVO, Y ESO ES DELIBERADO
+      Devuelve `RouteExportStop`, el mismo schema, con la misma regla de
+      agrupación: UNA PARADA POR CLIENTE, sumando sus pedidos. El Dashboard
+      reusa el armador de CSV que ya tiene.
+
+      Podría haberse devuelto el CSV ya armado desde el servidor, o podría
+      haberlo armado la pantalla con los datos de la grilla. Las dos opciones
+      dejan DOS implementaciones del mismo formato, y el día que una cambie,
+      los dos "mismos archivos" dejan de serlo. Una sola regla de agrupación,
+      un solo armador.
+
+      Y no lleva orden de paradas porque `RouteExportStop` nunca lo tuvo:
+      este archivo es la ENTRADA al software de mapas, y la secuencia vuelve
+      por `route-import`.
+
+    ★ POR QUÉ ES POST SI NO ESCRIBE NADA
+      Porque la lista de órdenes seleccionadas puede ser larga y en la query
+      string de un GET se vuelve frágil. No crea ni modifica nada: es una
+      lectura con un cuerpo grande.
+
+    ★ NADA SE DESCARTA EN SILENCIO
+      El servidor puede recibir una orden que ya no existe o que alguien
+      montó en un camión mientras el admin tenía la pantalla abierta. No se
+      omite y ya: se devuelve en `ignored`, con el motivo.
+
+      Sin eso, alguien selecciona 20 órdenes, el archivo sale con 19
+      clientes, y el estudio de ruta se hace sobre un cliente menos sin que
+      nadie lo note. Una lista más corta de lo pedido no se distingue de una
+      lista correcta si nadie dice qué faltó.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.43.1 — EL 409 DICE CUÁL ES EL CAMIÓN QUE YA EXISTE
@@ -6254,6 +6310,99 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/route-export:
+    post:
+      tags: [route-stops]
+      summary: Paradas de un conjunto de órdenes seleccionadas (sin camión)
+      description: >
+        ★ NUEVO en v0.44.0. REQUIERE rol ADMIN.
+
+        Las MISMAS paradas que `/admin/trucks/{truck_id}/route-export`, para
+        órdenes que todavía NO están montadas en ningún camión.
+
+        Sirve para UNA cosa: llevar las direcciones a un software de mapas
+        externo y **ver distancias** antes de decidir qué órdenes van juntas
+        en un camión.
+
+        ⚠️ NO ES PARA ORDENAR PARADAS. El orden de paradas sigue siendo lo
+        que es hoy —parte de lo que pasa DESPUÉS de montar las órdenes, con
+        el `route-export`/`route-import` del camión— y no cambia en nada.
+        Este endpoint no devuelve secuencia y no recibe ninguna de vuelta.
+        Se dice explícito porque el archivo es idéntico, y un archivo
+        idéntico invita a suponer que el proceso también lo es.
+
+        Misma regla de agrupación: UNA PARADA POR CLIENTE, sumando sus
+        pedidos. Mismo schema `RouteExportStop`.
+
+        No crea ni modifica nada. Es `POST` y no `GET` sólo porque la lista
+        de órdenes puede ser larga y en la query string se vuelve frágil.
+
+        ⚠️ NO valida que las órdenes sean "montables": mirar distancias es
+        exploratorio y bloquearlo obligaría a adivinar qué se puede mirar. Lo
+        que sí hace es DECIR qué órdenes no pudo incluir y por qué.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [order_uuids]
+              properties:
+                order_uuids:
+                  type: array
+                  minItems: 1
+                  maxItems: 500
+                  items: { type: string, format: uuid }
+                  description: >
+                    Las órdenes seleccionadas en la pantalla. Repetidas se
+                    ignoran sin error — seleccionar dos veces la misma no es
+                    un problema del que haya que avisar.
+      responses:
+        '200':
+          description: Paradas listas para el CSV
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  stops:
+                    type: array
+                    items: { $ref: '#/components/schemas/RouteExportStop' }
+                  incomplete_count:
+                    type: integer
+                    description: >
+                      Cuántas paradas tienen dirección, ciudad o zip
+                      incompletos. Aviso, no bloqueo — igual que en el export
+                      del camión.
+                  ignored:
+                    type: array
+                    description: >
+                      ★ Las órdenes que NO entraron en el archivo, con el
+                      motivo. Vacío si entraron todas.
+
+                      Existe para que nada se descarte en silencio: alguien
+                      selecciona 20 órdenes, una la montó otro admin mientras
+                      tanto, y el archivo saldría con 19 clientes sin que se
+                      note. Una lista más corta de lo pedido no se distingue
+                      de una lista correcta si nadie dice qué faltó.
+                    items:
+                      type: object
+                      properties:
+                        order_uuid: { type: string, format: uuid }
+                        reason:
+                          type: string
+                          enum: [not_found, already_on_truck]
+                          description: >
+                            `not_found`: la orden no existe o el admin no
+                            puede verla.
+                            `already_on_truck`: alguien la montó mientras la
+                            pantalla estaba abierta. NO es un error — es
+                            información para que el admin decida si rehace la
+                            selección o sigue.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /admin/trucks/{truck_id}/route-export:
     get:
