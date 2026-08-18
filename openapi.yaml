@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.41.1
+  version: 0.42.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -51,6 +51,69 @@ info:
     calcule "hoy" con el reloj UTC —por ejemplo con `toISOString()`— manda
     el día equivocado durante esa franja y reproduce el problema desde su
     lado, aunque el servidor esté bien.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.42.0 — LA GRILLA DE CLIENTES SE ORDENA Y DICE NOMBRES
+    ══════════════════════════════════════════════════════════════════════════
+
+    Sale de uso real del Dashboard, y de una verificación que cambió el pedido
+    original.
+
+    ★ 1. ORDENAMIENTO — `sort_by` / `sort_dir`
+      Por código, saldo, cupo, disponible y mora. Va al servidor por lo mismo
+      que en Órdenes (v0.38.0) y en Catálogo (v0.40.0): la grilla está
+      PAGINADA, así que ordenar en el cliente daría "el cliente con menos
+      disponible" queriendo decir "de esta página".
+
+      Desempate por `client_code`, que es único. Sin él, ordenar por mora
+      —donde la enorme mayoría comparte el valor 0— deja el orden de las filas
+      empatadas a criterio del motor, y sobre una lista paginada la misma fila
+      puede aparecer en dos páginas o en ninguna.
+
+    ★ 2. `search` GANA EL CÓDIGO POSTAL, Y NADA MÁS
+      Se pidió poder buscar por dirección, ciudad y código postal. Al
+      verificarlo contra el código resultó que `search` YA matchea código,
+      nombre, dirección y ciudad — el único que faltaba era `zipcode`, que
+      existe como columna y viaja en la respuesta pero no se buscaba.
+
+      Queda escrito qué campos cubre, que antes no estaba dicho en ningún
+      lado y había que ir a leerlo al repositorio.
+
+    ★ 3. EL VENDEDOR POR NOMBRE — `salesperson_name`
+      La grilla mostraba `salesperson_code` pelado. El nombre ya existe en el
+      espejo de vendedores de SAP —es el mismo `display_name` que devuelven
+      `/admin/salespersons` y `/admin/sap-salespersons`— así que se resuelve
+      del lado del servidor y ningún cliente tiene que cruzar dos listas.
+
+    ★ 4. LA ZONA DE REPARTO, QUE ES LO QUE SÍ TIENE NOMBRE
+      El pedido original era "mostrar la ruta por nombre en vez de por
+      código". La verificación dio que ESE NOMBRE NO EXISTE, y el hallazgo
+      útil fue otro: son DOS EJES DISTINTOS y el cliente tiene los dos.
+
+        · `shipping_route` — eje COMERCIAL, de `OCRD.U_RSAP_ROUTE`. Catorce
+          rutas, números. **No tiene nombre en ninguna parte alcanzable**:
+          ninguna de las diez vistas `vw_WMS_` expone una descripción, y no
+          hay tabla ni campo de usuario con uno. No es que nadie lo haya
+          conectado — no está.
+        · `shipping_code` — eje LOGÍSTICO, zonas de reparto. Treinta y seis
+          códigos, y **sí tiene nombre** (`shipping_code_name`: QNS1, NJN3,
+          BNX3). La vista ya lo expone y la pantalla de clientes no lo
+          recibía.
+
+      Entonces `AdminClient` gana `shipping_code` y `shipping_code_name`, que
+      son datos que ya existían y no llegaban, y `shipping_route` se queda
+      como número — con la razón escrita en el campo, para que nadie vuelva a
+      buscar un nombre que no hay.
+
+      ⚠️ `shipping_code_name` es el nombre de `shipping_code`, NUNCA de
+      `shipping_route`. Se parecen y no lo son, y confundirlos etiquetaría la
+      ruta comercial con la zona de reparto de ese cliente.
+
+    ★ NOTA SOBRE CÓMO VIAJAN, que explica una diferencia real de
+      comportamiento: `shipping_route` se resuelve contra el cliente en cada
+      lectura, mientras que `shipping_code` y su nombre se CONGELAN en la
+      orden al recibirla. Cambiarle la ruta a un cliente cambia lo que
+      muestran sus órdenes viejas; cambiarle el código de envío, no.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.41.1 — LO QUE v0.41.0 DIO POR OBVIO
@@ -4957,10 +5020,43 @@ paths:
         - name: search
           in: query
           schema: { type: string }
+          description: >
+            Coincidencia parcial sobre `client_code`, `name`, `address`,
+            `city` y —★ NUEVO en v0.42.0— `zipcode`.
+
+            Los cuatro primeros ya se buscaban y no estaba escrito en ningún
+            lado; el código postal existía como campo y viajaba en la
+            respuesta, pero no se buscaba.
         - name: only_overdue
           in: query
           schema: { type: boolean, default: false }
           description: ★ v0.4.0 — solo clientes con mora (>5 días).
+        - name: sort_by
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [client_code, balance, credit_limit, credit_available, overdue_amount]
+            default: client_code
+          description: >
+            ★ NUEVO en v0.42.0. Por qué campo ordenar. Los cuatro últimos son
+            campos de `credit`. El default reproduce el comportamiento
+            actual, así que un cliente que no lo manda ve lo mismo que hoy.
+        - name: sort_dir
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: asc
+          description: >
+            ★ NUEVO en v0.42.0. Dirección del ordenamiento.
+
+            ⚠️ DESEMPATE OBLIGATORIO por `client_code`, que es único. Sin él,
+            ordenar por mora —donde la enorme mayoría de los clientes comparte
+            el valor 0— deja el orden de las filas empatadas a criterio del
+            motor, y sobre una lista PAGINADA la misma fila puede aparecer en
+            dos páginas o en ninguna.
       responses:
         '200':
           description: Página de clientes
@@ -11188,8 +11284,53 @@ components:
         city: { type: string }
         zipcode: { type: string }
         manager_name: { type: string }
-        shipping_route: { type: string }
+        shipping_route:
+          type: string
+          description: >
+            Ruta COMERCIAL del cliente (de `OCRD.U_RSAP_ROUTE`). Catorce
+            rutas, identificadas por número.
+
+            ⚠️ NO TIENE NOMBRE, y no es un pendiente: se verificó que ninguna
+            de las diez vistas `vw_WMS_` expone una descripción de ruta y que
+            no existe tabla ni campo de usuario con una. Se muestra el número
+            porque es lo único que hay. Para el eje que SÍ tiene nombre, ver
+            `shipping_code_name` — que es otra cosa.
+
+            Se resuelve contra el cliente en CADA lectura, a diferencia de
+            `shipping_code`, que se congela en la orden al recibirla: cambiar
+            la ruta de un cliente cambia lo que muestran sus órdenes viejas.
+        shipping_code:
+          type: string
+          nullable: true
+          description: >
+            ★ NUEVO en v0.42.0. Zona de reparto — eje LOGÍSTICO, distinto del
+            comercial. Treinta y seis códigos. La vista ya lo exponía y esta
+            superficie no lo recibía.
+        shipping_code_name:
+          type: string
+          nullable: true
+          description: >
+            ★ NUEVO en v0.42.0. El nombre de la zona de reparto (QNS1, NJN3,
+            BNX3).
+
+            ⚠️ Es el nombre de `shipping_code`, NUNCA de `shipping_route`.
+            Los dos campos se parecen y no son lo mismo: rotular la ruta
+            comercial con este nombre le pondría a un cliente la etiqueta de
+            un eje que no es el suyo.
         salesperson_code: { type: string }
+        salesperson_name:
+          type: string
+          nullable: true
+          description: >
+            ★ NUEVO en v0.42.0. El nombre del vendedor asignado, resuelto por
+            el servidor desde el espejo de vendedores de SAP — el mismo
+            `display_name` que devuelven `/admin/salespersons` y
+            `/admin/sap-salespersons`.
+
+            Viaja resuelto para que ningún cliente tenga que cruzar dos
+            listas para mostrar un nombre. `null` si el código no
+            corresponde a ningún vendedor del espejo, que es un dato en sí
+            mismo y no un error de la pantalla.
         default_price_list: { $ref: '#/components/schemas/PriceListNumber' }
         additional_price_list:
           type: integer
