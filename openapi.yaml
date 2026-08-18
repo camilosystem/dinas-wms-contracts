@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.42.2
+  version: 0.43.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -51,6 +51,74 @@ info:
     calcule "hoy" con el reloj UTC —por ejemplo con `toISOString()`— manda
     el día equivocado durante esa franja y reproduce el problema desde su
     lado, aunque el servidor esté bien.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.43.0 — LOS NOMBRES DE CAMIÓN DEJAN DE SER TEXTO LIBRE
+    ══════════════════════════════════════════════════════════════════════════
+
+    Hasta acá, armar el camión del día empezaba escribiendo un nombre a mano.
+    Ahora se elige de una lista fija que se administra aparte.
+
+    ★ QUÉ SON ESOS NOMBRES, porque el rótulo engaña
+      NO son vehículos. La lista real es ALLENTOWN, BRONX, PHILADELPHIA,
+      QUEENS… más `CLIENTE RETIRA` y `UPS`, que no son camiones en absoluto.
+      Son DESTINOS DE REPARTO. Por eso el catálogo se llama así y no "flota":
+      un catálogo de vehículos invita a agregarle patente y capacidad, y esto
+      no es eso.
+
+      Tampoco se vincula con `shipping_code` (las 36 zonas de reparto tipo
+      BNX3). Son dos granularidades distintas y relacionarlas es una decisión
+      aparte que nadie pidió.
+
+    ★ EL CATÁLOGO — `/admin/delivery-truck-names`
+      Alta, listado y activar/desactivar. **No hay borrado**: un nombre que
+      deja de usarse esta temporada puede volver, y desactivarlo lo saca del
+      selector sin perderlo.
+
+      Los inactivos SIGUEN VIAJANDO en el listado, con la bandera en `false`
+      — misma razón que `visible_in_catalog` en el catálogo de ítems: quien
+      administra la lista tiene que poder volver a activarlos, y para eso
+      tiene que verlos.
+
+    ★ DOS REGLAS ESTRICTAS, decididas por Camilo
+
+      1. **El nombre tiene que estar en el catálogo y estar activo.** Un
+         nombre fuera de lista se rechaza (400 `unknown_truck_name`). Si hace
+         falta uno nuevo, primero se agrega al catálogo — que es el punto de
+         tener la lista. Sin esta regla el catálogo sería una sugerencia y el
+         texto libre volvería por la puerta de atrás.
+
+      2. **Un nombre, un camión por día** (409 `truck_name_used_today`). Dos
+         camiones BRONX el mismo día es siempre un error de carga, y sin la
+         regla se arman dos camiones para el mismo destino sin que nadie lo
+         note hasta que salen.
+
+    ★ Y LAS DOS REGLAS VALEN TAMBIÉN AL RENOMBRAR
+      `PATCH /admin/trucks/{truck_id}` es la otra puerta al mismo campo. Si
+      la creación validara y el renombre no, la regla se esquivaría creando
+      con un nombre válido y renombrando después — que es exactamente la
+      forma del hueco que este contrato ya produjo cuatro veces: cerrar una
+      compuerta y dejar la otra abierta.
+
+      ⚠️ Con una precisión que importa: al renombrar, la unicidad se evalúa
+      contra **el día del propio camión**, no contra hoy. Renombrar uno de
+      hace tres semanas no puede chocar con el BRONX de esta mañana.
+
+    ★ LO QUE NO CAMBIA
+      `Truck.name` sigue siendo un string y se COPIA al crear el camión. No
+      es una referencia al catálogo: renombrar una entrada del catálogo NO
+      renombra los camiones históricos, igual que `shipping_code_name` se
+      congela en la orden. Un camión es un documento del día y su etiqueta es
+      la que tuvo ese día.
+
+      Y los camiones que ya existen con nombres fuera del catálogo se quedan
+      como están. Las reglas aplican a lo que se crea y se renombra de acá en
+      adelante, no retroactivamente.
+
+    ★ CARGA INICIAL
+      Los 33 nombres se siembran en la migración. Es dato de referencia,
+      determinista e idéntico en todos los entornos — no es sembrar datos de
+      prueba, que es otra cosa y sigue prohibido.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.42.2 — LA ZONA DE VISITA YA TIENE NOMBRE
@@ -5226,6 +5294,117 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /admin/delivery-truck-names:
+    get:
+      tags: [trucks]
+      summary: Catálogo de nombres de reparto
+      description: >
+        ★ NUEVO en v0.43.0. REQUIERE rol ADMIN.
+
+        La lista fija de nombres con los que se puede crear un camión del
+        día. NO son vehículos: son destinos de reparto (ALLENTOWN, BRONX,
+        QUEENS…) más casos que no son camiones en absoluto, como
+        `CLIENTE RETIRA` y `UPS`.
+
+        Devuelve TODOS, activos e inactivos, ordenados por nombre. Los
+        inactivos viajan con `is_active: false` en vez de omitirse: quien
+        administra la lista tiene que poder volver a activarlos, y para eso
+        tiene que verlos. El selector de creación es el que filtra.
+
+        Sin paginar — son unas decenas y se consumen enteros.
+      responses:
+        '200':
+          description: El catálogo completo
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  names:
+                    type: array
+                    items: { $ref: '#/components/schemas/DeliveryTruckName' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [trucks]
+      summary: Agregar un nombre al catálogo
+      description: >
+        ★ NUEVO en v0.43.0. REQUIERE rol ADMIN. Nace activo.
+
+        El nombre se compara sin distinguir mayúsculas ni espacios de los
+        extremos: agregar "bronx" cuando ya existe "BRONX" devuelve 409
+        `truck_name_exists`, no crea un segundo. Un catálogo con dos entradas
+        que se ven iguales no ordena nada.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string, minLength: 1 }
+      responses:
+        '201':
+          description: Nombre agregado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeliveryTruckName' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: Ya existe un nombre igual (`truck_name_exists`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /admin/delivery-truck-names/{name_id}:
+    patch:
+      tags: [trucks]
+      summary: Activar, desactivar o corregir un nombre del catálogo
+      description: >
+        ★ NUEVO en v0.43.0. REQUIERE rol ADMIN. Campos omitidos = sin cambio.
+
+        **No hay borrado a propósito.** Un nombre que deja de usarse esta
+        temporada puede volver; desactivarlo lo saca del selector sin
+        perderlo ni romper nada.
+
+        ⚠️ CORREGIR UN NOMBRE ACÁ NO RENOMBRA NINGÚN CAMIÓN YA CREADO. El
+        camión copia el nombre al crearse, igual que la orden congela
+        `shipping_code_name`: es un documento del día y su etiqueta es la que
+        tuvo ese día. Sirve para arreglar un error de tipeo del catálogo, no
+        para reescribir historia.
+      parameters:
+        - name: name_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string, minLength: 1 }
+                is_active: { type: boolean }
+      responses:
+        '200':
+          description: Nombre actualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DeliveryTruckName' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Ya existe otro nombre igual (`truck_name_exists`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /admin/trucks:
     get:
       tags: [trucks]
@@ -5280,8 +5459,23 @@ paths:
 
                     Un nombre en blanco o solo espacios se rechaza con 400.
 
-                    Conviene que refleje la ruta real ("Ruta 11 - Jackson
-                    Heights"), no un número de secuencia.
+                    ★ v0.43.0 — DEJA DE SER TEXTO LIBRE. Tiene que ser un
+                    nombre del catálogo `/admin/delivery-truck-names` y estar
+                    ACTIVO; cualquier otro se rechaza con 400
+                    `unknown_truck_name`. Si hace falta uno nuevo, se agrega
+                    primero al catálogo — que es el punto de tener la lista.
+
+                    Y **UN NOMBRE, UN CAMIÓN POR DÍA**: si ya existe uno con
+                    ese nombre creado hoy (día calendario de Nueva York,
+                    según la regla global del principio de este documento),
+                    409 `truck_name_used_today`. Dos camiones BRONX el mismo
+                    día es siempre un error de carga, y sin la regla se arman
+                    dos para el mismo destino sin que nadie lo note hasta que
+                    salen.
+
+                    La comparación con el catálogo ignora mayúsculas y
+                    espacios de los extremos, pero el camión guarda el nombre
+                    CANÓNICO del catálogo, no lo que se mandó.
                 note: { type: string }
       responses:
         '201':
@@ -5289,8 +5483,22 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TruckDetail' }
+        '400':
+          description: >
+            ★ v0.43.0 — `unknown_truck_name`: el nombre no está en el
+            catálogo, o está inactivo.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: >
+            ★ v0.43.0 — `truck_name_used_today`: ya hay un camión con ese
+            nombre creado hoy.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /order-drafts:
     get:
@@ -5701,6 +5909,27 @@ paths:
                   description: >
                     Nombre nuevo. Si se omite, no se toca. En blanco o solo
                     espacios → 400.
+
+                    ★ v0.43.0 — RIGEN LAS MISMAS DOS REGLAS QUE AL CREAR:
+                    tiene que estar en el catálogo y activo (400
+                    `unknown_truck_name`), y no puede repetir el nombre de
+                    otro camión del mismo día (409 `truck_name_used_today`).
+
+                    Están acá porque ésta es la otra puerta al mismo campo:
+                    si la creación validara y el renombre no, la regla se
+                    esquivaría creando con un nombre válido y renombrando
+                    después. Es la forma exacta del hueco que este contrato ya
+                    produjo cuatro veces — cerrar una compuerta y dejar la
+                    otra abierta.
+
+                    ⚠️ La unicidad se evalúa contra EL DÍA DEL PROPIO CAMIÓN,
+                    no contra hoy. Renombrar uno de hace tres semanas no puede
+                    chocar con el BRONX de esta mañana.
+
+                    Los camiones creados antes de v0.43.0 pueden tener
+                    nombres fuera del catálogo. Se quedan como están: las
+                    reglas aplican a lo que se crea y se renombra de acá en
+                    adelante.
                 note:
                   type: string
                   nullable: true
@@ -10239,6 +10468,30 @@ components:
           EN_RUTA         ★ v0.14.0 — El driver inició la ruta; está despachando.
           RUTA_CERRADA    ★ v0.14.0 — El driver terminó la ruta.
           CANCELADO   Deshecho; sus órdenes vuelven a "sin asignar".
+
+    DeliveryTruckName:
+      type: object
+      description: >
+        ★ NUEVO en v0.43.0. Una entrada del catálogo de nombres de reparto.
+
+        NO es un vehículo: es un DESTINO. La lista real incluye ciudades y
+        barrios, y también `CLIENTE RETIRA` y `UPS`, que no son camiones en
+        absoluto. Si algún día hace falta modelar vehículos —patente,
+        capacidad, mantenimiento— eso es otra entidad, no ésta.
+      required: [id, name, is_active]
+      properties:
+        id: { type: string, format: uuid }
+        name:
+          type: string
+          description: El nombre canónico, que es lo que se copia al camión.
+        is_active:
+          type: boolean
+          description: >
+            Los inactivos NO se ofrecen al crear un camión y el servidor los
+            rechaza, pero SIGUEN VIAJANDO en el listado del catálogo: quien
+            lo administra tiene que poder reactivarlos, y para eso tiene que
+            verlos. No hay borrado.
+        created_at: { type: string, format: date-time }
 
     TruckSummary:
       type: object
