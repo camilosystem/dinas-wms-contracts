@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.43.0
+  version: 0.43.1
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -51,6 +51,36 @@ info:
     calcule "hoy" con el reloj UTC —por ejemplo con `toISOString()`— manda
     el día equivocado durante esa franja y reproduce el problema desde su
     lado, aunque el servidor esté bien.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.43.1 — EL 409 DICE CUÁL ES EL CAMIÓN QUE YA EXISTE
+    ══════════════════════════════════════════════════════════════════════════
+
+    `truck_name_used_today` gana `conflicting_truck_id`, en las dos puertas
+    (crear y renombrar).
+
+    ★ POR QUÉ
+      Quien recibe ese 409 casi siempre quiere ABRIR el camión que ya existe,
+      no crear otro. Sin el id, el cliente tiene que redescubrirlo: pedir
+      `GET /admin/trucks?date=…` y matchear por nombre.
+
+      Dos cosas están mal en eso. El servidor YA SABE cuál es —lo encontró
+      para poder devolver el 409—, así que hacer que el cliente lo derive de
+      nuevo es la misma clase de trabajo duplicado que `total_amount` y
+      `lines_subtotal` vinieron a eliminar.
+
+      Y la derivación trae un bug adentro: ese "hoy" tendría que resolverse
+      contra el día de Nueva York, y calculado en UTC buscaría en el día
+      equivocado entre las 20:00 y la medianoche — o sea que el atajo diría
+      "no lo encuentro" justo después de que el servidor afirmó que existe.
+      Es la trampa horaria de siempre, esta vez en producción y no en un test.
+
+    ★ Y RESUELVE UN SEGUNDO PROBLEMA DE PASO
+      Al renombrar, la unicidad se evalúa contra el día del propio camión, no
+      contra hoy. Sin el id, el cliente tendría que saber eso y buscar con
+      `created_at` del camión que está editando. Con el id no hay nada que
+      razonar: el servidor devuelve el que chocó, sea de hoy o de hace tres
+      semanas.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.43.0 — LOS NOMBRES DE CAMIÓN DEJAN DE SER TEXTO LIBRE
@@ -5498,7 +5528,25 @@ paths:
             nombre creado hoy.
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/Error' }
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Error'
+                  - type: object
+                    properties:
+                      conflicting_truck_id:
+                        type: string
+                        format: uuid
+                        description: >
+                          ★ NUEVO en v0.43.1. El camión que ya tiene ese
+                          nombre ese día.
+
+                          Viaja para que el cliente pueda OFRECER ABRIRLO,
+                          que es lo que quiere quien recibe este error. Sin
+                          él tendría que redescubrirlo con
+                          `GET /admin/trucks?date=…` y matchear por nombre —
+                          trabajo que el servidor ya hizo, y con la trampa de
+                          resolver ese "hoy" contra el día de Nueva York y no
+                          el UTC.
 
   /order-drafts:
     get:
@@ -5930,6 +5978,13 @@ paths:
                     nombres fuera del catálogo. Se quedan como están: las
                     reglas aplican a lo que se crea y se renombra de acá en
                     adelante.
+
+                    ★ v0.43.1 — el 409 de este endpoint trae
+                    `conflicting_truck_id`, igual que el de creación. Es más
+                    útil acá todavía: como la unicidad se evalúa contra el
+                    día del propio camión, sin el id el cliente tendría que
+                    saber esa regla y buscar con el `created_at` del camión
+                    que está editando. Con el id no hay nada que razonar.
                 note:
                   type: string
                   nullable: true
@@ -5942,10 +5997,35 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TruckDetail' }
-        '400': { $ref: '#/components/responses/BadRequest' }
+        '400':
+          description: >
+            Nombre en blanco, o —★ v0.43.0— `unknown_truck_name`: el nombre
+            no está en el catálogo de reparto o está inactivo.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            ★ v0.43.0 — `truck_name_used_today`: otro camión DEL MISMO DÍA
+            QUE ÉSTE ya tiene ese nombre. Ojo: el día que cuenta es el del
+            camión que se está renombrando, no hoy.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Error'
+                  - type: object
+                    properties:
+                      conflicting_truck_id:
+                        type: string
+                        format: uuid
+                        description: >
+                          ★ NUEVO en v0.43.1. El camión que ya tiene ese
+                          nombre ese día, para poder ofrecer abrirlo sin que
+                          el cliente tenga que buscarlo.
     delete:
       tags: [trucks]
       summary: Eliminar un camión
