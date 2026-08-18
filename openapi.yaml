@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.45.0
+  version: 0.45.1
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -51,6 +51,86 @@ info:
     calcule "hoy" con el reloj UTC —por ejemplo con `toISOString()`— manda
     el día equivocado durante esa franja y reproduce el problema desde su
     lado, aunque el servidor esté bien.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.45.1 — LO QUE v0.45.0 DIJO DE MÁS SOBRE route-import
+    ══════════════════════════════════════════════════════════════════════════
+
+    Solo TEXTO: ningún campo nuevo, ninguna puerta nueva. Pero cambia una
+    regla de validación, así que no es cosmético.
+
+    ★ LA FRASE QUE ESTABA DE MÁS
+      v0.45.0 dice: «Agrupando por cliente, `route-import` no cambia en
+      NADA». Eso es cierto del EMPAREJAMIENTO —sigue siendo un Stop # por
+      `client_code`, y ésa es la parte que importaba— y falso del CONJUNTO
+      contra el que valida.
+
+      El import rechaza con 400 los `client_code` que "no están en el
+      camión", y ese conjunto era "clientes con órdenes". Ahora es
+      **clientes con órdenes ∪ clientes con recogidas**.
+
+    ★ POR QUÉ NO ES UN DETALLE
+      Sin esa corrección el bloque se cierra sobre sí mismo, y de la peor
+      manera: sin ningún error visible en el camino.
+
+        1. `route-export` incluye al cliente de pura recogida — correcto.
+        2. Vuelve en el CSV de OptimoRoute con su Stop #.
+        3. El import lo rechaza como código extraño → 400.
+        4. El admin lo saca del CSV para que el import pase.
+        5. La parada nunca se crea. El driver no la ve.
+        6. Y si igual va, `POST /dispatch/returns` la rechaza: "no es una
+           parada de esta ruta".
+
+      Cada paso individual parece razonable. El resultado es una recogida
+      que existe en tres pantallas y en ninguna ruta.
+
+    ★ MONTAR UNA RECOGIDA PUEDE INVALIDAR LA SECUENCIA YA IMPORTADA
+      Si la recogida CREA una parada nueva —un cliente que no tenía nada en
+      ese camión— y el camión ya tenía su orden de paradas importado, la
+      secuencia queda INVALIDADA: `has_route` vuelve a `false` y hay que
+      reimportar.
+
+      La alternativa era dejar la parada con `stop_number: null`, y eso es
+      exactamente la clase de pérdida silenciosa que este proyecto ya pagó
+      varias veces: el manifiesto, la ruta del driver y la pantalla de
+      cierre ordenan por `stop_number`, así que una parada sin número no
+      aparece en ninguna de las tres. Existe en la base y no existe en la
+      calle.
+
+      La otra alternativa —que el servidor la agregue como última parada—
+      es peor: inventaría un recorrido que ningún software de mapas
+      calculó, con la forma de uno que sí.
+
+      Invalidar es ruidoso a propósito. `assign` exige `has_route`, así que
+      el camión no avanza hasta que alguien reimporte. Ese es el punto.
+
+      Si la recogida se suma a una parada que YA existe (el cliente ya
+      tenía pedidos), no pasa nada: la parada ya tiene número.
+
+    ★ MISMA REGLA AL DESMONTAR
+      Quitar la última recogida de un cliente sin pedidos borra su parada, y
+      eso también invalida la secuencia.
+
+      ⚠️ ASIMETRÍA CONOCIDA, NO RESUELTA ACÁ: quitar la última ORDEN de un
+      cliente después de importar deja hoy una parada huérfana sin invalidar
+      nada. Es anterior a este bloque y menos grave —una parada de más se
+      ve; una parada de menos no—, pero es la misma falla. Queda anotada
+      como decisión pendiente, no como cosa que no vimos.
+
+    ★ UNA INVARIANTE QUE SE PUEDE VERIFICAR
+      En una misma solicitud, `source_return_id` y `pickup.return_id` NUNCA
+      pueden tener el mismo valor.
+
+      Son los dos sentidos del vínculo: `source_return_id` es la devolución
+      de la que NACIÓ la solicitud; `pickup.return_id` es la devolución que
+      la solicitud MANDÓ a buscar. Que coincidan significa que registrar la
+      recogida escribió el enlace de nacimiento, y con eso la garantía de
+      "un solo crédito por mercancía devuelta" queda inservible sin que
+      nada falle.
+
+      Se escribe como igualdad de dos campos del contrato justamente para
+      que se pueda comprobar con un test, y no quede como una advertencia
+      que hay que recordar.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.45.0 — UNA SOLICITUD DE CRÉDITO PUEDE SER UNA PARADA
@@ -6522,6 +6602,23 @@ paths:
         (`pickup_not_marked`) o si ya está montada en otro camión
         (`pickup_on_another_truck`, con `truck_id`).
 
+        ⚠️ ★ v0.45.1 — SI CREA UNA PARADA NUEVA E INVALIDA LA SECUENCIA. Si
+        el cliente NO tenía nada en este camión, la recogida agrega una
+        parada; y si el camión ya tenía su orden de paradas importado, esa
+        secuencia queda INVALIDADA: `has_route` vuelve a `false` y hay que
+        reimportar de OptimoRoute. La respuesta ya lo refleja.
+
+        Es a propósito y es ruidoso: `assign` exige `has_route`, así que el
+        camión no avanza hasta que alguien reimporte. La alternativa era
+        dejar la parada con `stop_number: null`, y el manifiesto, la ruta
+        del driver y el cierre ordenan por `stop_number` — una parada sin
+        número existe en la base y no existe en la calle. Que el servidor la
+        pusiera al final sería peor: inventaría un recorrido que ningún
+        software de mapas calculó.
+
+        Si el cliente YA era parada (tenía pedidos acá), no pasa nada: la
+        parada ya tiene su número y la recogida se le suma.
+
         NO exige que la solicitud esté pendiente: aprobar y recoger son vías
         separadas y una solicitud decidida se puede recoger igual.
       parameters:
@@ -6567,10 +6664,11 @@ paths:
         La solicitud vuelve a MARCADA (disponible para otro camión); NO
         pierde la marca. Misma ventana que montar: congelado → 409.
 
-        Si el cliente queda sin pedidos ni recogidas en el camión, su parada
-        desaparece — y si la secuencia ya estaba importada, hay que
-        reimportarla. El servidor no reordena solo: renumerar paradas que un
-        software externo calculó sería inventar una ruta.
+        ★ v0.45.1 — Si el cliente queda sin pedidos ni recogidas en el
+        camión, su parada DESAPARECE, y si la secuencia ya estaba importada
+        queda INVALIDADA: `has_route` vuelve a `false`. El servidor no
+        renumera solo — reordenar paradas que un software externo calculó
+        sería inventar una ruta.
       parameters:
         - name: truck_id
           in: path
@@ -6848,6 +6946,19 @@ paths:
         Dashboard, o el CSV crudo). Cada entrada trae el client_code (Order #)
         y su Stop #. El middleware empareja por client_code y guarda el orden.
         Aplica el Stop # a todos los pedidos de ese cliente en el camión.
+
+        ⚠️ ★ v0.45.1 — QUÉ SIGNIFICA "ESTÁ EN EL CAMIÓN". Los clientes
+        válidos son los que tienen **órdenes O RECOGIDAS** en el camión, no
+        solo los que tienen órdenes. Un cliente de pura recogida es una
+        parada legítima: viene en `route-export`, vuelve en el CSV con su
+        Stop #, y el import DEBE aceptarlo.
+
+        Si se valida solo contra las órdenes, el bloque se cierra sobre sí
+        mismo sin un solo error visible: el import rechaza al cliente de
+        recogida, el admin lo saca del CSV para que pase, la parada nunca se
+        crea, el driver no la ve, y `POST /dispatch/returns` la rechaza
+        porque "no es una parada de esta ruta". Cada paso parece razonable
+        por separado.
         RE-IMPORTABLE: reemplaza el orden anterior. Solo si el camión NO ha
         empezado el picking (si no → 409).
       parameters:
@@ -6884,8 +6995,8 @@ paths:
               schema: { $ref: '#/components/schemas/TruckRoute' }
         '400':
           description: >
-            CSV inválido, o client_codes que no están en el camión, o Stop #
-            duplicados/faltantes.
+            CSV inválido, o client_codes que no están en el camión —★ v0.45.1:
+            ni con órdenes NI con recogidas—, o Stop # duplicados/faltantes.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -10178,6 +10289,14 @@ components:
             la que NACIÓ esta solicitud; `pickup.return_id` es la devolución
             que esta solicitud MANDÓ a buscar. Una solicitud puede tener las
             dos y no son la misma mercancía.
+
+            ★ v0.45.1 — INVARIANTE VERIFICABLE: en una misma solicitud,
+            `source_return_id` y `pickup.return_id` NUNCA pueden ser
+            iguales. Que coincidan significa que registrar la recogida
+            escribió el enlace de nacimiento, y con eso la garantía de "un
+            solo crédito por mercancía devuelta" queda inservible sin que
+            nada falle. Está escrito como igualdad de dos campos para que
+            sea un test y no una advertencia que hay que recordar.
         reason:
           allOf:
             - $ref: '#/components/schemas/CreditRequestReason'
@@ -10360,7 +10479,15 @@ components:
         truck_id: { type: string, format: uuid }
         has_route:
           type: boolean
-          description: Si el camión ya tiene orden de paradas importado.
+          description: >
+            Si el camión ya tiene orden de paradas importado.
+
+            ★ v0.45.1 — VUELVE A `false` cuando cambia el CONJUNTO de
+            paradas: montar una recogida de un cliente que no estaba, o
+            quitar la última recogida de un cliente sin pedidos. La
+            secuencia importada dejó de describir al camión, y `assign`
+            exige `has_route` — el camión se detiene hasta que se reimporte,
+            que es exactamente lo que tiene que pasar.
         imported_at:
           type: string
           format: date-time
