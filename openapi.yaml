@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.42.1
+  version: 0.42.2
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -51,6 +51,38 @@ info:
     calcule "hoy" con el reloj UTC —por ejemplo con `toISOString()`— manda
     el día equivocado durante esa franja y reproduce el problema desde su
     lado, aunque el servidor esté bien.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.42.2 — LA ZONA DE VISITA YA TIENE NOMBRE
+    ══════════════════════════════════════════════════════════════════════════
+
+    ★ `shipping_route_name`, EN LAS DOS SUPERFICIES QUE LLEVAN LA ZONA
+      El nombre existía en la tabla de usuario `@RSAP_ROUTE` de SAP y ninguna
+      vista lo exponía. Ya se agregó a `vw_WMS_Clients` con un `LEFT JOIN`, y
+      quedó verificado contra datos reales: 14 zonas con nombre y 5 clientes
+      sin zona que siguen en el catálogo con el nombre en `null` — con un
+      `INNER` habrían desaparecido sin dejar rastro.
+
+      Va a `AdminClient` **y a `OrderSummary`**. La orden ya llevaba
+      `shipping_route` heredado del cliente y ya llevaba `shipping_code_name`
+      para el otro eje: dejar el nombre solo en el cliente reproduciría en el
+      mismo archivo la asimetría que este cambio viene a cerrar.
+
+    ★ `AdminClient.shipping_code` PASA DE STRING A INTEGER
+      El mismo campo estaba declarado `integer` en `OrderSummary` y `string`
+      en `AdminClient` — lo introduje así en v0.42.0 y es el mismo error que
+      el proyecto acaba de encontrar en dos vistas SQL hermanas que tipan
+      `is_canceled` distinto. Un campo con dos tipos según dónde se lea
+      obliga a cada cliente a recordar cuál le tocó.
+
+      Se corrige ahora, mientras el campo tiene una semana y dos
+      implementaciones, y no dentro de un año.
+
+    ★ DEUDA CONOCIDA QUE NO SE TOCA
+      `shipping_route` viaja como `string` en las dos superficies aunque el
+      dato de origen sea entero. Es superficie vieja que las tres apps ya
+      consumen, así que cambiarla costaría más de lo que arregla. Queda
+      dicho para que se lea como decisión y no como descuido.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.42.1 — DOS ZONAS, Y PARA QUÉ ES CADA UNA
@@ -11096,8 +11128,27 @@ components:
           type: string
           nullable: true
           description: >
-            Ruta COMERCIAL heredada del cliente (U_RSAP_ROUTE). Es para
-            vendedores, NO para logística. No se usa para armar camiones.
+            ★ PRECISADO EN v0.42.2 — la ZONA DE VISITA DEL VENDEDOR, heredada
+            del cliente (`U_RSAP_ROUTE`). Es para la persona que vende, NO
+            para logística: no se usa para armar camiones.
+
+            El nombre legible está en `shipping_route_name`.
+        shipping_route_name:
+          type: string
+          nullable: true
+          description: >
+            ★ NUEVO en v0.42.2. Nombre de la zona de visita, heredado del
+            cliente igual que el código.
+
+            Está acá y no sólo en `AdminClient` porque esta superficie ya
+            llevaba `shipping_code_name` para el otro eje: tener el nombre de
+            una zona y no de la otra en el mismo objeto es la asimetría que
+            este proyecto ya pagó cuatro veces.
+
+            ⚠️ Se resuelve contra el cliente en CADA lectura, a diferencia de
+            `shipping_code_name`, que se congela al recibir la orden. Cambiar
+            la zona de visita de un cliente cambia lo que muestran sus
+            órdenes viejas.
         shipping_code:
           type: integer
           nullable: true
@@ -11107,7 +11158,9 @@ components:
         shipping_code_name:
           type: string
           nullable: true
-          description: Nombre legible del shipping code (BNX3, BRK1...).
+          description: >
+            Nombre legible de la zona de REPARTO (BNX3, BRK1…), congelado al
+            recibir la orden.
         truck_id:
           type: string
           format: uuid
@@ -11338,22 +11391,35 @@ components:
             ⚠️ Rotularla "ruta" a secas la hace leer como recorrido de
             camión. El rótulo tiene que decir de quién es la visita.
 
-            ⚠️ EL NOMBRE EXISTE pero todavía NO VIAJA. Vive en la tabla de
-            usuario `@RSAP_ROUTE` de SAP, y `vw_WMS_Clients` aún no lo
-            expone: hace falta un `LEFT JOIN` calcado del que esa misma vista
-            ya hace contra `[@RSAP_SHIPPING_CODE]`. Hasta entonces se muestra
-            el número, que es lo único que llega.
+            El nombre legible está en `shipping_route_name` desde v0.42.2.
 
-            (En v0.42.0 este campo decía que el nombre no existía. Era la
-            conclusión correcta sobre la superficie que el middleware puede
-            leer —diez vistas, ninguna tabla— y falsa sobre la base: está en
-            una tabla que esa cuenta no alcanza.)
+            ⚠️ Viaja como `string` aunque el dato de origen sea entero. Es
+            superficie vieja que las tres apps ya consumen; queda así a
+            propósito, no por descuido.
 
             Se resuelve contra el cliente en CADA lectura, a diferencia de
             `shipping_code`, que se congela en la orden al recibirla: cambiar
             la ruta de un cliente cambia lo que muestran sus órdenes viejas.
-        shipping_code:
+        shipping_route_name:
           type: string
+          nullable: true
+          description: >
+            ★ NUEVO en v0.42.2. El nombre de la zona de VISITA DEL VENDEDOR
+            (Bronx y Manhtt, Queens Retail, Long Island…), de la tabla de
+            usuario `@RSAP_ROUTE`.
+
+            `null` cuando el cliente no tiene zona de visita asignada — hay 5
+            así sobre 2.638, y siguen en el catálogo a propósito: la vista
+            usa `LEFT JOIN` justamente para que no desaparezcan por no tener
+            nombre.
+
+            ⚠️ Cuatro de las catorce zonas NO son lugares (Admon, Aliados,
+            Sales Manager, Telemarketing), y dos que sí lo parecen están
+            partidas por canal y no por geografía (Queens foodservices contra
+            Queens Retail). Es clasificación COMERCIAL: no la uses para nada
+            que dependa de dónde queda el cliente.
+        shipping_code:
+          type: integer
           nullable: true
           description: >
             ★ NUEVO en v0.42.0, ★ PRECISADO EN v0.42.1 — ZONA DE REPARTO:
@@ -11366,6 +11432,10 @@ components:
 
             No confundir con `shipping_route`, que también es una zona pero
             para la VISITA DEL VENDEDOR.
+
+            ★ v0.42.2 — pasa de `string` a `integer`, para coincidir con el
+            mismo campo en `OrderSummary`. Estaba con dos tipos según dónde
+            se leyera.
         shipping_code_name:
           type: string
           nullable: true
