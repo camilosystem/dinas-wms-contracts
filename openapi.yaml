@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.44.0
+  version: 0.45.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -51,6 +51,146 @@ info:
     calcule "hoy" con el reloj UTC —por ejemplo con `toISOString()`— manda
     el día equivocado durante esa franja y reproduce el problema desde su
     lado, aunque el servidor esté bien.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.45.0 — UNA SOLICITUD DE CRÉDITO PUEDE SER UNA PARADA
+    ══════════════════════════════════════════════════════════════════════════
+
+    Hasta acá un camión llevaba UNA sola clase de cosa: pedidos que se
+    ENTREGAN. Pero una solicitud de crédito muchas veces significa que hay
+    que ir a BUSCAR mercancía donde el cliente, y eso también necesita un
+    camión — solo que en la dirección contraria.
+
+    ★ NO TODA SOLICITUD ES UNA RECOGIDA
+      Primero alguien la marca como tal. Un crédito por diferencia de
+      precio, o un SHORT (mercancía que nunca llegó al cliente), no tiene
+      nada que recoger. Por eso la recogida es una MARCA explícita y no algo
+      que el sistema deduzca del motivo: los motivos no alcanzan para
+      decidirlo y adivinarlo mandaría camiones a buscar aire.
+
+    ★ DOS ACTOS, NO UNO
+      1. MARCAR (`POST /admin/credit-requests/{request_uuid}/pickup`), desde
+         la misma bandeja de pendientes. Es una decisión sobre la mercancía.
+      2. MONTAR en un camión (`POST /admin/trucks/{truck_id}/pickups`). Es
+         un acto de logística.
+
+      Están separados porque casi nunca pasan en el mismo momento: la
+      solicitud llega hoy y el camión que va a esa zona se arma mañana. Si
+      marcar exigiera elegir camión, habría que inventar un camión para
+      poder marcar.
+
+    ★ LA VENTANA DE CADA UNO ES DISTINTA — Y ESO ES DELIBERADO
+      · MARCAR: solo mientras la solicitud está PENDIENTE_APROBACION.
+      · MONTAR: en cualquier momento después de marcada, decidida o no.
+
+      Porque APROBAR Y RECOGER SON VÍAS SEPARADAS. El aprobador decide sin
+      esperar a que la mercancía vuelva, y el camión la recoge sin esperar
+      la decisión. Ninguna de las dos es requisito de la otra, y el contrato
+      no pone ninguna puerta entre ellas.
+
+      Consecuencia que hay que decir en voz alta: una solicitud RECHAZADA
+      puede seguir montada en un camión. El sistema NO la desmonta solo.
+      Sacarle una parada a un camión que alguien ya armó —o peor, que el
+      driver ya descargó— por un cambio de estado en otra pantalla es
+      exactamente la clase de cosa que nadie ve hasta que el driver llega y
+      no encuentra la parada. Se muestra el estado de la solicitud junto a
+      la parada (`TruckPickup.request_status`) y decide una persona.
+
+    ★ UNA PARADA POR CLIENTE — LA RECOGIDA SE SUMA A LA QUE YA HAY
+      Si el cliente ya tiene pedidos en ese camión, la recogida NO agrega
+      una parada: se suma a la del cliente. El camión pasa UNA vez y hace
+      las dos cosas.
+
+      Esto no es una preferencia de presentación: TODO el andamiaje de
+      paradas agrupa por `client_code` —`RouteExportStop`, el `Order #` del
+      CSV de OptimoRoute, el emparejamiento de `route-import`, `RouteStop`,
+      `DriverStop`—. Dos paradas para el mismo cliente le devolverían UN
+      solo Stop # a dos filas, y el import ya no sabría a cuál aplicarlo.
+      Agrupando por cliente, `route-import` no cambia en NADA.
+
+    ⚠️ UNA PARADA PUEDE NO TENER PEDIDOS
+      Un cliente que solo tiene recogida es una parada con `orders: []`.
+      Vale para `RouteExportStop` (`order_count: 0`, `subtotal: 0`), para el
+      manifiesto, para `DriverStop` y para la pantalla de cierre.
+
+      Quien pinta esas pantallas NO puede tratar "sin pedidos" como "no hay
+      nada que hacer acá" ni filtrar la parada por tener la lista vacía. Es
+      la parada donde hay que ir a buscar. Se dice explícito porque este
+      proyecto ya perdió datos así: una lista vacía que en realidad
+      significaba otra cosa.
+
+    ★ LO QUE UNA RECOGIDA NO TOCA
+      No se alista, no se pica, no va en un pallet, no tiene monto, no
+      entra en `invoice-readiness` ni en `send-to-invoicing`, y no cambia
+      `order_count` ni `total_amount` del camión. No hay nada que preparar
+      en bodega para ir a buscar mercancía. Los carriles de picking y sus
+      contadores la ignoran por completo.
+
+      Y NO VIAJA A SAP. `SapCreditRequestSyncTask` queda exactamente como
+      estaba: lo que va a SAP es la nota de crédito cuando se aprueba, y eso
+      no cambió. La recogida es un movimiento de camión, no un documento.
+
+    ★ EL CAMIÓN SIGUE NECESITANDO AL MENOS UN PEDIDO PARA CONFIRMARSE
+      Un camión de puras recogidas no se puede confirmar (400, igual que
+      hoy). No es un olvido: un camión sin nada que picar no puede recorrer
+      los estados de picking —EN_PICKING, EN_REPARTICION, ALISTADO— que son
+      los que lo llevan hasta el driver. La recogida viaja con el camión que
+      ya va a esa zona.
+
+    ★ SE MONTA HASTA QUE EL CAMIÓN SE CONGELA
+      Misma ventana que las órdenes: BORRADOR, CONFIRMADO o ASIGNADO; a
+      partir de EN_PICKING → 409. Y NO es porque haya algo que picar —no lo
+      hay—, sino porque a esa altura la secuencia de paradas ya se importó
+      y se cerró. Una parada agregada después no tiene `stop_number`, y una
+      parada sin número es una parada que el driver no ve. Si la solicitud
+      llega tarde, va en el camión del día siguiente.
+
+    ★ LO QUE REGISTRA EL DRIVER YA EXISTÍA
+      Cantidades por ítem y foto obligatoria es EXACTAMENTE
+      `POST /dispatch/returns`, que está en pie desde v0.15.0. No se
+      duplica: ese endpoint gana `pickup_for_request_uuid` para decir "esta
+      devolución ES la recogida de esta solicitud".
+
+      Las cantidades que trae el driver PUEDEN NO COINCIDIR con las que
+      pidió el vendedor, y eso no es un error: se pidió crédito por 10 y el
+      cliente entregó 7. Lo que la solicitud dice viaja al driver como
+      `expected_items` —referencia, no validación—; el servidor NO compara
+      ni rechaza por diferencia.
+
+    ⚠️ `pickup_for_request_uuid` NO ES `credit_request_uuid`
+      Son enlaces OPUESTOS entre las mismas dos entidades y confundirlos
+      rompe una garantía que ya existe:
+
+        · `ProductReturn.credit_request_uuid` (v0.33.0) = la solicitud que
+          NACIÓ de esta devolución. Devolución primero, crédito después.
+        · `ProductReturn.pickup_for_request_uuid` (v0.45.0) = la solicitud
+          que MANDÓ a buscar esta mercancía. Crédito primero, devolución
+          después.
+
+      Si la recogida escribiera el campo viejo, "esta devolución ya generó
+      un crédito" pasaría a ser falso y se podría crear un SEGUNDO crédito
+      desde ella sin que nada lo detecte: dos créditos por la misma
+      mercancía, cada uno impecable por separado. Por eso son dos campos.
+
+      Regla para el Dashboard: una devolución con `pickup_for_request_uuid`
+      NO ofrece "crear solicitud de crédito desde esta devolución". El
+      crédito ya existe — es el que la mandó a buscar.
+
+    ★ "NO SE RECOGIÓ" TIENE QUE PODER DECIRSE
+      `POST /dispatch/pickups/{request_uuid}/not-collected`. Sin esto, una
+      recogida que el driver nunca pudo hacer y una que nadie miró se ven
+      IDÉNTICAS desde la oficina: las dos quedan en EN_CAMION para siempre.
+      Un estado que solo avanza cuando todo sale bien no informa nada
+      cuando sale mal.
+
+    ★ CREAR SOLICITUDES DE CRÉDITO DESDE EL DASHBOARD — SIN CONTRATO NUEVO
+      No hay ningún cambio para esto, y no es un olvido: `POST
+      /credit-requests` acepta ADMIN y APROBADOR_CREDITOS desde v0.33.1, y
+      desde v0.33.2 el `salesperson_code` se resuelve DESDE EL CLIENTE y no
+      desde el token de quien carga — precisamente para que la oficina
+      pueda cargarlas sin quedar como dueña de ellas. `created_by` guarda
+      quién la cargó. La evidencia se sube por `POST /evidence-photos`, que
+      ya es compartido. Es pantalla, no contrato.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.44.0 — EXPORTAR PARADAS ANTES DE ARMAR EL CAMIÓN
@@ -2940,6 +3080,11 @@ tags:
     description: Pagos de ruta vistos por el admin (Bloque 4C).
   - name: returns-admin
     description: Retornos vistos por el admin (Bloque 4B).
+  - name: pickups
+    description: >
+      ★ v0.45.0 — Recogidas: solicitudes de crédito convertidas en parada de
+      camión para ir a BUSCAR mercancía. Marcar (bandeja), montar (camión) y
+      registrar (driver). Vía separada de la aprobación del crédito.
 
 paths:
   /auth/login:
@@ -3916,6 +4061,104 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
           description: Ya fue decidida
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /admin/credit-requests/{request_uuid}/pickup:
+    post:
+      tags: [pickups]
+      summary: Marcar una solicitud de crédito como RECOGIDA de producto
+      description: >
+        ★ NUEVO en v0.45.0. REQUIERE rol ADMIN o APROBADOR_CREDITOS.
+
+        Marca que esta solicitud implica ir a BUSCAR mercancía donde el
+        cliente. NO la monta en ningún camión: eso es un acto aparte
+        (`POST /admin/trucks/{truck_id}/pickups`), porque el camión de esa
+        zona normalmente todavía no existe cuando llega la solicitud.
+
+        SOLO mientras la solicitud está PENDIENTE_APROBACION → 409
+        `credit_request_already_decided` si ya se decidió. Marcar es parte de
+        mirarla por primera vez; una vez decidida, esa ventana se cerró.
+
+        ⚠️ MARCAR NO ES APROBAR NI CONDICIONA LA APROBACIÓN. Aprobar y
+        recoger son vías separadas: el aprobador decide sin esperar la
+        mercancía y el camión la recoge sin esperar la decisión.
+
+        Idempotente: volver a marcar una ya marcada devuelve 200 con el
+        estado actual, sin crear nada ni pisar `pickup_note` con null.
+      parameters:
+        - name: request_uuid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                pickup_note:
+                  type: string
+                  nullable: true
+                  description: >
+                    Instrucción para quien va a recoger (dónde está la
+                    mercancía, con quién preguntar). La ve el driver en su
+                    parada. Omitirlo en una re-marca NO borra el anterior.
+      responses:
+        '200':
+          description: Solicitud marcada como recogida
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreditRequestDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            `credit_request_already_decided` — la solicitud ya fue aprobada,
+            rechazada o cancelada.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [pickups]
+      summary: Quitarle la marca de recogida a una solicitud
+      description: >
+        ★ NUEVO en v0.45.0. REQUIERE rol ADMIN o APROBADOR_CREDITOS.
+
+        Deshace la marca. La solicitud sigue su curso normal de aprobación —
+        esto no la toca.
+
+        Se puede desmarcar aunque la solicitud ya esté decidida: la marca
+        pudo ponerse por error y no hay razón para dejar viva una recogida
+        que nadie va a hacer. Lo que NO se puede es desmarcar una recogida
+        que ya está montada en un camión (409 `pickup_on_truck`, con
+        `truck_id`) ni una ya RECOGIDA (409 `pickup_already_collected`):
+        primero se desmonta del camión, y lo que ya volvió en un camión no
+        se puede declarar inexistente.
+
+        Idempotente: desmarcar una que no está marcada devuelve 200.
+      parameters:
+        - name: request_uuid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Marca retirada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreditRequestDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            `pickup_on_truck` (está montada en un camión; el cuerpo trae
+            `truck_id`) o `pickup_already_collected` (el driver ya registró
+            la devolución).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -5954,6 +6197,45 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /admin/trucks/available-pickups:
+    get:
+      tags: [pickups]
+      summary: Recogidas marcadas y sin camión
+      description: >
+        ★ NUEVO en v0.45.0. REQUIERE rol ADMIN.
+
+        El equivalente de `/admin/trucks/available-orders` para el otro
+        sentido: las solicitudes marcadas como recogida que todavía no están
+        montadas en ningún camión activo.
+
+        Trae el shipping code del cliente porque es el eje por el que se
+        arman los camiones — sin él, decidir en qué camión va cada recogida
+        obligaría a abrir el cliente uno por uno.
+
+        Incluye las ya decididas (aprobadas o rechazadas): aprobar y recoger
+        son vías separadas, y una recogida marcada sigue pendiente de hacer
+        aunque la solicitud ya se haya decidido. Cada fila dice en qué estado
+        está su solicitud.
+      parameters:
+        - name: shipping_code
+          in: query
+          required: false
+          schema: { type: integer }
+          description: Filtrar por shipping code del cliente (el eje logístico).
+      responses:
+        '200':
+          description: Recogidas disponibles para montar
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pickups:
+                    type: array
+                    items: { $ref: '#/components/schemas/AvailablePickup' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /admin/trucks/{truck_id}:
     get:
       tags: [trucks]
@@ -6219,6 +6501,102 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
 
+  /admin/trucks/{truck_id}/pickups:
+    post:
+      tags: [pickups]
+      summary: Montar recogidas en un camión
+      description: >
+        ★ NUEVO en v0.45.0. REQUIERE rol ADMIN.
+
+        Monta una o varias solicitudes YA MARCADAS como recogida. Cada una
+        se convierte en parada del camión — o se SUMA a la parada que el
+        cliente ya tiene si además lleva pedidos, porque el camión pasa una
+        sola vez.
+
+        Ventana: BORRADOR, CONFIRMADO o ASIGNADO. Desde EN_PICKING en
+        adelante → 409, no porque haya algo que picar (no lo hay) sino
+        porque la secuencia de paradas ya se cerró y una parada sin
+        `stop_number` es una parada que el driver no ve.
+
+        Rechaza con 400 si la solicitud no está marcada como recogida
+        (`pickup_not_marked`) o si ya está montada en otro camión
+        (`pickup_on_another_truck`, con `truck_id`).
+
+        NO exige que la solicitud esté pendiente: aprobar y recoger son vías
+        separadas y una solicitud decidida se puede recoger igual.
+      parameters:
+        - name: truck_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [request_uuids]
+              properties:
+                request_uuids:
+                  type: array
+                  items: { type: string, format: uuid }
+                  minItems: 1
+      responses:
+        '200':
+          description: Recogidas montadas
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TruckDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: El camión está congelado (EN_PICKING en adelante)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /admin/trucks/{truck_id}/pickups/{request_uuid}:
+    delete:
+      tags: [pickups]
+      summary: Quitar una recogida de un camión
+      description: >
+        ★ NUEVO en v0.45.0. REQUIERE rol ADMIN.
+
+        La solicitud vuelve a MARCADA (disponible para otro camión); NO
+        pierde la marca. Misma ventana que montar: congelado → 409.
+
+        Si el cliente queda sin pedidos ni recogidas en el camión, su parada
+        desaparece — y si la secuencia ya estaba importada, hay que
+        reimportarla. El servidor no reordena solo: renumerar paradas que un
+        software externo calculó sería inventar una ruta.
+      parameters:
+        - name: truck_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: request_uuid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Recogida removida del camión
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TruckDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            El camión está congelado, o el driver ya registró esta recogida
+            (`pickup_already_collected`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /admin/trucks/{truck_id}/confirm:
     post:
       tags: [trucks]
@@ -6358,6 +6736,22 @@ paths:
                     Las órdenes seleccionadas en la pantalla. Repetidas se
                     ignoran sin error — seleccionar dos veces la misma no es
                     un problema del que haya que avisar.
+                pickup_request_uuids:
+                  type: array
+                  maxItems: 500
+                  items: { type: string, format: uuid }
+                  description: >
+                    ★ NUEVO en v0.45.0. Recogidas marcadas que se están
+                    considerando para el mismo camión. Suman su parada al
+                    estudio de distancias — una recogida es una parada más y
+                    dejarla fuera daría un estudio sobre una ruta que no es
+                    la que va a hacerse.
+
+                    Un cliente que aparece por pedido y por recogida sale
+                    UNA sola vez, igual que en el camión.
+
+                    Sigue habiendo al menos una orden porque un camión de
+                    puras recogidas no existe (ver `confirm`).
       responses:
         '200':
           description: Paradas listas para el CSV
@@ -7714,6 +8108,70 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
 
+  /dispatch/pickups/{request_uuid}/not-collected:
+    post:
+      tags: [pickups]
+      summary: Declarar que una recogida NO se pudo hacer
+      description: >
+        ★ NUEVO en v0.45.0. REQUIERE rol DRIVER con camión EN_RUTA; la
+        recogida debe ser de SU camión → 403.
+
+        La contraparte de registrar la devolución. EXISTE PORQUE SIN ELLA
+        una recogida que el driver no pudo hacer y una que nadie miró se ven
+        idénticas desde la oficina: las dos se quedan en EN_CAMION para
+        siempre. Un estado que solo avanza cuando sale bien no dice nada
+        cuando sale mal.
+
+        No afecta la solicitud de crédito: el aprobador decide igual.
+
+        Idempotente: reenviar ACTUALIZA (motivo y nota), clave para el
+        offline. Si la recogida YA se registró como hecha → 409
+        `pickup_already_collected`; corregirse ahí es asunto de la oficina,
+        no de la calle.
+      parameters:
+        - name: request_uuid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { $ref: '#/components/schemas/PickupNotCollectedReason' }
+                note: { type: string, nullable: true }
+                occurred_at:
+                  type: string
+                  format: date-time
+                  nullable: true
+                  description: >
+                    Cuándo ocurrió la visita. Si se registró sin señal y
+                    sincroniza horas después, esta es la hora real.
+      responses:
+        '200':
+          description: Registrado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CreditRequestPickup' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403':
+          description: La recogida no es del camión de este driver
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            El camión no está EN_RUTA, o la recogida ya se registró como
+            hecha (`pickup_already_collected`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /dispatch/finish-route:
     post:
       tags: [dispatch]
@@ -7813,6 +8271,26 @@ paths:
                   description: >
                     Referencia opcional que dé el cliente (número de factura,
                     remisión). Texto libre — no se valida contra nada.
+                pickup_for_request_uuid:
+                  type: string
+                  format: uuid
+                  nullable: true
+                  description: >
+                    ★ NUEVO en v0.45.0. La solicitud de crédito que MANDÓ a
+                    buscar esta mercancía, cuando esta devolución es la
+                    RECOGIDA de una parada de recogida.
+
+                    Debe ser una recogida montada en SU camión → 400
+                    `pickup_not_on_route` si no. Al aceptarla, la recogida
+                    pasa a RECOGIDA.
+
+                    ⚠️ Las cantidades PUEDEN diferir de las que pidió la
+                    solicitud y el servidor NO las compara ni rechaza: se
+                    pidió crédito por 10 y el cliente entregó 7. Quien
+                    aprueba ve las dos cifras y decide.
+
+                    NULL en una devolución espontánea, que es como funcionó
+                    todo hasta v0.44.0 y sigue funcionando igual.
       responses:
         '201':
           description: Retorno registrado
@@ -9333,6 +9811,195 @@ components:
             del driver y su foto; si no, la tipeó alguien a mano. Igual que
             `created_by`, el aprobador lo necesita antes de decidir y no
             después.
+        pickup:
+          allOf:
+            - $ref: '#/components/schemas/CreditRequestPickup'
+          nullable: true
+          description: >
+            ★ NUEVO en v0.45.0. La recogida de esta solicitud, si alguien la
+            marcó como tal. NULL cuando no hay nada que ir a buscar — que es
+            el caso normal.
+
+            Está en la bandeja porque marcar se hace DESDE la bandeja y solo
+            mientras la solicitud está pendiente: si no se viera acá, el
+            botón no tendría cómo saber si ya está marcada.
+
+            ⚠️ NO condiciona la decisión. El aprobador puede aprobar o
+            rechazar con la recogida en cualquier estado, y debe poder
+            hacerlo sin esperar a que la mercancía vuelva.
+
+    PickupStatus:
+      type: string
+      enum: [MARCADA, EN_CAMION, RECOGIDA, NO_RECOGIDA]
+      description: >
+        ★ NUEVO en v0.45.0. Dónde va la recogida de una solicitud de crédito.
+          MARCADA       Alguien decidió que hay que ir a buscar. Sin camión.
+          EN_CAMION     Montada en un camión, como parada.
+          RECOGIDA      El driver registró la devolución (con foto).
+          NO_RECOGIDA   El driver fue y no pudo — ver `not_collected_reason`.
+
+        Es INDEPENDIENTE de `ApprovalStatus`. Una solicitud aprobada puede
+        estar sin recoger y una rechazada puede estar recogida: son dos
+        vías, no dos etapas de la misma.
+
+    PickupNotCollectedReason:
+      type: string
+      enum: [NADA_QUE_RECOGER, NEGOCIO_CERRADO, CLIENTE_NO_LA_ENTREGA, SIN_ESPACIO_EN_CAMION]
+      description: >
+        ★ NUEVO en v0.45.0. Por qué el driver no pudo hacer la recogida.
+          NADA_QUE_RECOGER      Llegó y no había mercancía para llevarse.
+          NEGOCIO_CERRADO       Mismo caso que en las entregas.
+          CLIENTE_NO_LA_ENTREGA El cliente se negó a entregarla.
+          SIN_ESPACIO_EN_CAMION No cabía. Es real y hay que poder decirlo.
+
+    PickupExpectedItem:
+      type: object
+      description: >
+        ★ NUEVO en v0.45.0. Lo que la solicitud dice que hay que buscar.
+        REFERENCIA, no validación: el driver registra lo que efectivamente
+        recibe y puede no coincidir.
+      properties:
+        item_code: { type: string }
+        item_name: { type: string, nullable: true }
+        quantity:
+          type: number
+          format: double
+          description: Cantidad que pide la solicitud.
+
+    CreditRequestPickup:
+      type: object
+      description: >
+        ★ NUEVO en v0.45.0. El estado de la recogida de una solicitud de
+        crédito. Va dentro de la solicitud, no al revés: la solicitud existe
+        primero y la recogida es algo que se le agrega.
+      required: [status]
+      properties:
+        status: { $ref: '#/components/schemas/PickupStatus' }
+        marked_by: { type: string, description: Quién la marcó como recogida. }
+        marked_at: { type: string, format: date-time }
+        pickup_note:
+          type: string
+          nullable: true
+          description: Instrucción para quien va a recoger. La ve el driver.
+        truck_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: El camión donde está montada. NULL si todavía es MARCADA.
+        truck_name: { type: string, nullable: true }
+        truck_status:
+          allOf:
+            - $ref: '#/components/schemas/TruckStatus'
+          nullable: true
+          description: >
+            Estado del camión. Dice si todavía se puede desmontar sin pelear
+            con el congelamiento.
+        stop_number:
+          type: integer
+          nullable: true
+          description: >
+            Su parada, si el camión ya importó la secuencia. NULL mientras no
+            la tenga — y eso NO significa "primera parada".
+        return_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            La devolución (`ProductReturn`) con la que el driver registró la
+            recogida, con sus cantidades reales y su foto. NULL hasta que
+            ocurra.
+        not_collected_reason:
+          allOf:
+            - $ref: '#/components/schemas/PickupNotCollectedReason'
+          nullable: true
+          description: Solo cuando el estado es NO_RECOGIDA.
+        not_collected_note: { type: string, nullable: true }
+        resolved_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Cuándo se cerró (RECOGIDA o NO_RECOGIDA), hora real de la calle.
+
+    TruckPickup:
+      type: object
+      description: >
+        ★ NUEVO en v0.45.0. Una recogida montada en un camión, como la ve el
+        admin en el detalle del camión.
+      properties:
+        request_uuid: { type: string, format: uuid }
+        client_code: { type: string }
+        client_name: { type: string }
+        reason: { $ref: '#/components/schemas/CreditRequestReason' }
+        request_status:
+          allOf:
+            - $ref: '#/components/schemas/ApprovalStatus'
+          description: >
+            ⚠️ El estado de la SOLICITUD, que puede ser RECHAZADA con la
+            recogida igual montada. El sistema NO la desmonta solo —
+            sacarle una parada a un camión ya armado por un cambio de estado
+            en otra pantalla es invisible hasta que el driver llega. Está acá
+            para que una persona lo vea y decida.
+        pickup_status: { $ref: '#/components/schemas/PickupStatus' }
+        pickup_note: { type: string, nullable: true }
+        stop_number: { type: integer, nullable: true }
+        expected_items:
+          type: array
+          items: { $ref: '#/components/schemas/PickupExpectedItem' }
+          description: >
+            Lo que pide la solicitud. VACÍO en la modalidad SIN ítems (la del
+            `manual_amount`), y vacío ahí significa "no se sabe qué ni
+            cuánto", NO "nada que recoger".
+        return_id: { type: string, format: uuid, nullable: true }
+
+    AvailablePickup:
+      type: object
+      description: >
+        ★ NUEVO en v0.45.0. Una recogida marcada y sin camión, como la ve el
+        admin al armar camiones.
+      properties:
+        request_uuid: { type: string, format: uuid }
+        client_code: { type: string }
+        client_name: { type: string }
+        address: { type: string, nullable: true }
+        city: { type: string, nullable: true }
+        zip_code: { type: string, nullable: true }
+        shipping_code: { type: integer, nullable: true }
+        shipping_code_name: { type: string, nullable: true }
+        reason: { $ref: '#/components/schemas/CreditRequestReason' }
+        request_status: { $ref: '#/components/schemas/ApprovalStatus' }
+        marked_at: { type: string, format: date-time }
+        pickup_note: { type: string, nullable: true }
+        expected_items:
+          type: array
+          items: { $ref: '#/components/schemas/PickupExpectedItem' }
+
+    DriverPickup:
+      type: object
+      description: >
+        ★ NUEVO en v0.45.0. Una recogida en la parada, como la ve el driver.
+        Va en la descarga de la ruta, así que tiene que bastarse sola sin
+        conexión.
+      properties:
+        request_uuid: { type: string, format: uuid }
+        reason: { $ref: '#/components/schemas/CreditRequestReason' }
+        pickup_note: { type: string, nullable: true }
+        pickup_status: { $ref: '#/components/schemas/PickupStatus' }
+        expected_items:
+          type: array
+          items: { $ref: '#/components/schemas/PickupExpectedItem' }
+          description: >
+            Lo que la oficina espera que traiga. Es una AYUDA para buscar,
+            no una lista a confirmar: el driver registra lo que el cliente
+            efectivamente entrega, aunque sea menos, más o distinto. Vacía
+            cuando la solicitud no tiene ítems — ahí hay que preguntar en el
+            local.
+        return_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            La devolución con la que ya la registró, si ya lo hizo. Sirve
+            para que la app no la registre dos veces.
 
     InvoiceLine:
       type: object
@@ -9498,6 +10165,19 @@ components:
             ★ NUEVO en v0.33.0. La devolución de ruta de la que nació esta
             solicitud, si se creó precargándola desde una. NULL si nació de
             la app del vendedor o de la oficina sin devolución detrás.
+        pickup:
+          allOf:
+            - $ref: '#/components/schemas/CreditRequestPickup'
+          nullable: true
+          description: >
+            ★ NUEVO en v0.45.0. La recogida de esta solicitud, si se marcó
+            una. NULL si no.
+
+            ⚠️ NO confundir con `source_return_id`, que está dos campos más
+            arriba y apunta al revés: `source_return_id` es la devolución de
+            la que NACIÓ esta solicitud; `pickup.return_id` es la devolución
+            que esta solicitud MANDÓ a buscar. Una solicitud puede tener las
+            dos y no son la misma mercancía.
         reason:
           allOf:
             - $ref: '#/components/schemas/CreditRequestReason'
@@ -9635,7 +10315,19 @@ components:
         shipping_code_name: { type: string, nullable: true }
         order_count:
           type: integer
-          description: Cuántos pedidos de este cliente hay en el camión.
+          description: >
+            Cuántos pedidos de este cliente hay en el camión.
+
+            ⚠️ ★ v0.45.0 — PUEDE SER 0. Un cliente al que solo se va a
+            RECOGER es una parada igual, con `order_count: 0` y `subtotal:
+            0`. Quien arma el CSV no puede filtrar por esto: la parada existe
+            y tiene que ir al software de mapas, o el estudio de ruta sale
+            sobre una ruta que no es la que se va a hacer.
+        pickup_count:
+          type: integer
+          description: >
+            ★ NUEVO en v0.45.0. Cuántas recogidas de solicitudes de crédito
+            tiene esta parada. Normalmente 0.
         address_incomplete:
           type: boolean
           description: >
@@ -9654,6 +10346,12 @@ components:
         order_count:
           type: integer
           description: Pedidos de este cliente en el camión (todos comparten el stop).
+        pickup_count:
+          type: integer
+          description: >
+            ★ NUEVO en v0.45.0. Recogidas de este cliente en el camión. Una
+            parada con `order_count: 0` y `pickup_count: 1` es una parada de
+            pura recogida — existe y hay que ir.
 
     TruckRoute:
       type: object
@@ -10012,6 +10710,15 @@ components:
                         recogió todo lo pedido). El cliente recibe menos de lo
                         que pidió. El manifiesto debe MARCARLO para que el
                         driver y el cliente lo sepan al entregar.
+              pickups:
+                type: array
+                items: { $ref: '#/components/schemas/TruckPickup' }
+                description: >
+                  ★ NUEVO en v0.45.0. Lo que hay que RECOGER en esta parada.
+
+                  ⚠️ Una parada puede traer `orders: []` y una recogida. El
+                  manifiesto tiene que imprimirla igual y distinguirla de una
+                  entrega: el driver va a buscar, no a dejar.
 
     DeliveryStatus:
       type: string
@@ -10145,6 +10852,17 @@ components:
               orders:
                 type: array
                 items: { $ref: '#/components/schemas/DeliveryRecord' }
+              pickups:
+                type: array
+                items: { $ref: '#/components/schemas/TruckPickup' }
+                description: >
+                  ★ NUEVO en v0.45.0. Las recogidas de esta parada con su
+                  estado: RECOGIDA (con `return_id`), NO_RECOGIDA (con
+                  motivo) o todavía EN_CAMION.
+
+                  ⚠️ EN_CAMION con el camión ya de vuelta significa que nadie
+                  la tocó — no que salió bien. El admin la cierra desde el
+                  Dashboard; el contrato NO la resuelve sola.
 
     WorkloadBoard:
       type: object
@@ -10406,7 +11124,23 @@ components:
         phone: { type: string, nullable: true }
         orders:
           type: array
+          description: >
+            ⚠️ ★ v0.45.0 — PUEDE VENIR VACÍA. Una parada de pura recogida no
+            tiene pedidos. La app NO puede saltarse una parada por tener esta
+            lista vacía ni mostrarla como "sin nada que hacer": es la parada
+            donde hay que ir a BUSCAR.
           items: { $ref: '#/components/schemas/DriverOrder' }
+        pickups:
+          type: array
+          items: { $ref: '#/components/schemas/DriverPickup' }
+          description: >
+            ★ NUEVO en v0.45.0. Lo que hay que RECOGER en esta parada. Vacía
+            en la enorme mayoría de las paradas.
+
+            El driver la registra con `POST /dispatch/returns` mandando
+            `pickup_for_request_uuid` — cantidades reales y FOTO obligatoria,
+            lo mismo que una devolución espontánea. Si no puede,
+            `POST /dispatch/pickups/{request_uuid}/not-collected`.
 
     DriverOrder:
       type: object
@@ -10571,6 +11305,31 @@ components:
             ya tienen crédito sin recorrer todas las solicitudes buscando.
             Sin esto, crear dos créditos por la misma mercancía devuelta
             sería invisible: cada uno se vería perfectamente válido.
+        pickup_for_request_uuid:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            ★ NUEVO en v0.45.0. La solicitud de crédito que MANDÓ a buscar
+            esta mercancía: esta devolución es la RECOGIDA de una parada de
+            recogida.
+
+            ⚠️ ES EL ENLACE OPUESTO A `credit_request_uuid`, el campo de
+            arriba, y confundirlos rompe una garantía:
+
+              · `credit_request_uuid`      — el crédito que NACIÓ de esta
+                                             devolución (devolución primero).
+              · `pickup_for_request_uuid`  — el crédito que MANDÓ a buscar
+                                             esta mercancía (crédito primero).
+
+            Si la recogida escribiera el campo de arriba, "esta devolución ya
+            generó un crédito" pasaría a ser falso y se podría crear un
+            SEGUNDO crédito desde ella sin que nada lo detecte: dos créditos
+            por la misma mercancía, cada uno impecable por separado.
+
+            REGLA PARA EL DASHBOARD: una devolución con este campo NO ofrece
+            "crear solicitud de crédito desde esta devolución". El crédito ya
+            existe — es el que la mandó a buscar.
 
     ProductReturnItem:
       type: object
@@ -10733,10 +11492,19 @@ components:
         status: { $ref: '#/components/schemas/TruckStatus' }
         created_at: { type: string, format: date-time }
         order_count: { type: integer }
+        pickup_count:
+          type: integer
+          description: >
+            ★ NUEVO en v0.45.0. Cuántas recogidas de solicitudes de crédito
+            lleva el camión. NO están contadas en `order_count` ni suman a
+            `total_amount`: una recogida no es una venta y no tiene monto.
+            Tampoco se pica ni se paletiza.
         total_amount:
           type: number
           format: double
-          description: Suma de las órdenes del camión.
+          description: >
+            Suma de las órdenes del camión. ★ v0.45.0 — las recogidas no
+            suman acá.
         shipping_codes:
           type: array
           items: { type: string }
@@ -10821,6 +11589,12 @@ components:
               type: array
               items: { $ref: '#/components/schemas/OrderSummary' }
               description: Las órdenes montadas en este camión.
+            pickups:
+              type: array
+              items: { $ref: '#/components/schemas/TruckPickup' }
+              description: >
+                ★ NUEVO en v0.45.0. Las recogidas montadas en este camión.
+                Lista vacía cuando no hay ninguna, que es lo normal.
 
     HoldReason:
       type: string
