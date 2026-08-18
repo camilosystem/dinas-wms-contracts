@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.42.0
+  version: 0.42.1
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -51,6 +51,44 @@ info:
     calcule "hoy" con el reloj UTC —por ejemplo con `toISOString()`— manda
     el día equivocado durante esa franja y reproduce el problema desde su
     lado, aunque el servidor esté bien.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.42.1 — DOS ZONAS, Y PARA QUÉ ES CADA UNA
+    ══════════════════════════════════════════════════════════════════════════
+
+    SOLO TEXTO. Ningún campo nuevo, ninguna forma cambia. Se corrige lo que
+    v0.42.0 dijo que significaban `shipping_code` y `shipping_route`, que ya
+    había producido una columna mal rotulada en el Dashboard.
+
+    ★ LOS DOS SON ZONAS. LO QUE LOS SEPARA ES PARA QUÉ.
+
+      · `shipping_code` — ZONA DE REPARTO. Para el CAMIÓN que entrega. Y
+        además determina QUÉ DÍAS DE LA SEMANA recibe entregas ese cliente,
+        que es para lo que existe `/admin/shipping-codes/{code}/delivery-days`.
+
+      · `shipping_route` — ZONA DE VISITA DEL VENDEDOR. Para la PERSONA que
+        vende. Es la clasificación comercial que se les da a los vendedores:
+        a qué zona vende y visita cada uno. Sus nombres viven en la tabla de
+        usuario `@RSAP_ROUTE` de SAP.
+
+    ★ POR QUÉ NO ALCANZA CON DECIR "ZONA" EN NINGUNO DE LOS DOS
+      Los dos agrupan clientes geográficamente y ninguno agrupa por lo que el
+      otro agrupa. Un cliente puede estar en una zona de reparto y ser
+      visitado por un vendedor de otra zona: son dos recorridos distintos con
+      dos propósitos distintos.
+
+      Una pantalla que diga sólo "zona" obliga a adivinar cuál, y una que
+      diga "ruta" a secas se lee como recorrido de camión cuando es de
+      persona. **Cada rótulo tiene que decir PARA QUÉ es**: "zona de reparto"
+      y "zona de visita del vendedor", nunca "zona" a secas.
+
+    ★ LO QUE FALTA TODAVÍA
+      `shipping_route_name` NO está en esta versión. Los nombres existen en
+      `@RSAP_ROUTE`, pero `vw_WMS_Clients` todavía no los expone — hace falta
+      un `LEFT JOIN` calcado del que esa misma vista ya hace contra
+      `[@RSAP_SHIPPING_CODE]`. Se declara cuando el servidor tenga de dónde
+      sacarlo, no antes: un campo que nadie puede llenar es peor que no
+      tenerlo, porque los clientes lo dan por disponible.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.42.0 — LA GRILLA DE CLIENTES SE ORDENA Y DICE NOMBRES
@@ -11287,14 +11325,29 @@ components:
         shipping_route:
           type: string
           description: >
-            Ruta COMERCIAL del cliente (de `OCRD.U_RSAP_ROUTE`). Catorce
-            rutas, identificadas por número.
+            ★ CORREGIDO EN v0.42.1 — LA ZONA DE VISITA DEL VENDEDOR (de
+            `OCRD.U_RSAP_ROUTE`). Es la clasificación COMERCIAL que se les da
+            a los vendedores: a qué zona vende y visita cada uno. Catorce
+            zonas, identificadas por número.
 
-            ⚠️ NO TIENE NOMBRE, y no es un pendiente: se verificó que ninguna
-            de las diez vistas `vw_WMS_` expone una descripción de ruta y que
-            no existe tabla ni campo de usuario con una. Se muestra el número
-            porque es lo único que hay. Para el eje que SÍ tiene nombre, ver
-            `shipping_code_name` — que es otra cosa.
+            Es una zona, igual que `shipping_code` — lo que las separa es
+            PARA QUÉ: ésta es para la PERSONA que vende, aquélla para el
+            CAMIÓN que entrega. Un cliente puede estar en una zona de reparto
+            y ser visitado por un vendedor de otra.
+
+            ⚠️ Rotularla "ruta" a secas la hace leer como recorrido de
+            camión. El rótulo tiene que decir de quién es la visita.
+
+            ⚠️ EL NOMBRE EXISTE pero todavía NO VIAJA. Vive en la tabla de
+            usuario `@RSAP_ROUTE` de SAP, y `vw_WMS_Clients` aún no lo
+            expone: hace falta un `LEFT JOIN` calcado del que esa misma vista
+            ya hace contra `[@RSAP_SHIPPING_CODE]`. Hasta entonces se muestra
+            el número, que es lo único que llega.
+
+            (En v0.42.0 este campo decía que el nombre no existía. Era la
+            conclusión correcta sobre la superficie que el middleware puede
+            leer —diez vistas, ninguna tabla— y falsa sobre la base: está en
+            una tabla que esa cuenta no alcanza.)
 
             Se resuelve contra el cliente en CADA lectura, a diferencia de
             `shipping_code`, que se congela en la orden al recibirla: cambiar
@@ -11303,20 +11356,31 @@ components:
           type: string
           nullable: true
           description: >
-            ★ NUEVO en v0.42.0. Zona de reparto — eje LOGÍSTICO, distinto del
-            comercial. Treinta y seis códigos. La vista ya lo exponía y esta
-            superficie no lo recibía.
+            ★ NUEVO en v0.42.0, ★ PRECISADO EN v0.42.1 — ZONA DE REPARTO:
+            para el CAMIÓN que entrega. Treinta y seis códigos. La vista ya
+            lo exponía y esta superficie no lo recibía.
+
+            Además determina QUÉ DÍAS DE LA SEMANA recibe entregas este
+            cliente, que es para lo que existe
+            `/admin/shipping-codes/{code}/delivery-days`.
+
+            No confundir con `shipping_route`, que también es una zona pero
+            para la VISITA DEL VENDEDOR.
         shipping_code_name:
           type: string
           nullable: true
           description: >
-            ★ NUEVO en v0.42.0. El nombre de la zona de reparto (QNS1, NJN3,
-            BNX3).
+            ★ NUEVO en v0.42.0, ★ PRECISADO EN v0.42.1. El nombre de la zona
+            de reparto (BNX3, BRK1, QNS2).
 
             ⚠️ Es el nombre de `shipping_code`, NUNCA de `shipping_route`.
-            Los dos campos se parecen y no son lo mismo: rotular la ruta
-            comercial con este nombre le pondría a un cliente la etiqueta de
-            un eje que no es el suyo.
+            Los dos son zonas del cliente y ninguna agrupa por lo que agrupa
+            la otra: ésta es la del CAMIÓN que entrega, la otra la de la
+            VISITA DEL VENDEDOR. Un cliente puede estar en una y ser visitado
+            desde la otra.
+
+            El rótulo en pantalla tiene que decir para qué es la zona —
+            "zona de reparto"— y nunca "zona" a secas.
         salesperson_code: { type: string }
         salesperson_name:
           type: string
