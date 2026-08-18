@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.45.1
+  version: 0.45.2
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -51,6 +51,55 @@ info:
     calcule "hoy" con el reloj UTC —por ejemplo con `toISOString()`— manda
     el día equivocado durante esa franja y reproduce el problema desde su
     lado, aunque el servidor esté bien.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.45.2 — INVALIDAR BORRA LAS PARADAS, Y `lines: null`
+    ══════════════════════════════════════════════════════════════════════════
+
+    Solo TEXTO. Dos cosas que estaban implícitas y una de ellas ya se había
+    implementado bien por criterio propio — que es exactamente cuando hay
+    que escribirla, antes de que el próximo la implemente distinto.
+
+    ★ INVALIDAR NO ES APAGAR UN BOOLEANO: LAS PARADAS SE BORRAN
+      v0.45.1 dijo que cambiar el conjunto de paradas pone `has_route` en
+      `false`. No alcanza.
+
+      `POST /dispatch/returns` y el manifiesto leen las paradas guardadas
+      SIN mirar `has_route`. Si las filas quedaran ahí, la secuencia
+      invalidada seguiría siendo la verdad justo en los dos lugares donde
+      importa: el driver validaría contra un recorrido que ya no describe al
+      camión, y el manifiesto imprimiría un orden obsoleto. La invalidación
+      sería invisible donde tenía que ser visible.
+
+      Entonces: al invalidar, las paradas se BORRAN. `has_route: false` y
+      sin secuencia guardada. Hay que reimportar de OptimoRoute.
+
+    ⚠️ CONSECUENCIA QUE HAY QUE DECIR: `GET /admin/trucks/{truck_id}/route`
+      responde 404 después de una invalidación, igual que si nunca se
+      hubiera importado. Desde ahí NO se distingue "todavía no se importó"
+      de "se invalidó porque cambiaron las paradas".
+
+      No se agrega un campo para distinguirlas porque la acción es la misma
+      —importar— y un campo nuevo solo para explicar el pasado invita a que
+      alguien decida con él. Lo que sí hay que hacer es AVISAR EN EL
+      MOMENTO: la respuesta de montar o desmontar una recogida ya trae
+      `has_route: false`, y ese es el único instante en que el admin puede
+      entender por qué perdió la secuencia. Si la pantalla no lo dice ahí,
+      el admin se entera media hora después, en una pantalla que le dice
+      404 sin explicación.
+
+    ★ `lines: null` ES LO MISMO QUE OMITIR `lines`
+      El texto decía "si se OMITE, es la modalidad SIN ítems". Un cliente
+      que manda `lines: null` explícitamente está diciendo lo mismo y el
+      servidor debe tratarlo igual.
+
+      Se escribe porque el Dashboard manda `null` y el contrato decía
+      "omite": dos lecturas razonables de la misma frase, y la diferencia
+      entre ellas es un 400 que nadie sabría explicar. La modalidad se
+      infiere de lo mismo de siempre — `lines` con contenido = CON ítems;
+      `lines` ausente o null + `manual_amount` = SIN ítems. Una `lines: []`
+      NO es la modalidad sin ítems: es una solicitud con ítems y ninguno,
+      y se rechaza con 400.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.45.1 — LO QUE v0.45.0 DIJO DE MÁS SOBRE route-import
@@ -6608,8 +6657,16 @@ paths:
         secuencia queda INVALIDADA: `has_route` vuelve a `false` y hay que
         reimportar de OptimoRoute. La respuesta ya lo refleja.
 
+        ★ v0.45.2 — INVALIDAR BORRA LAS PARADAS, no solo apaga el booleano.
+        `POST /dispatch/returns` y el manifiesto leen las paradas guardadas
+        sin mirar `has_route`: dejar las filas haría la invalidación
+        invisible justo donde importa.
+
         Es a propósito y es ruidoso: `assign` exige `has_route`, así que el
-        camión no avanza hasta que alguien reimporte. La alternativa era
+        camión no avanza hasta que alguien reimporte. Y la respuesta de esta
+        llamada trae `has_route: false` — ése es el momento de avisarle al
+        admin, porque después `GET .../route` responde 404 sin poder decir
+        por qué. La alternativa era
         dejar la parada con `stop_number: null`, y el manifiesto, la ruta
         del driver y el cierre ordenan por `stop_number` — una parada sin
         número existe en la base y no existe en la calle. Que el servidor la
@@ -6666,7 +6723,8 @@ paths:
 
         ★ v0.45.1 — Si el cliente queda sin pedidos ni recogidas en el
         camión, su parada DESAPARECE, y si la secuencia ya estaba importada
-        queda INVALIDADA: `has_route` vuelve a `false`. El servidor no
+        queda INVALIDADA: `has_route` vuelve a `false` y ★ v0.45.2 las
+        paradas guardadas se BORRAN. El servidor no
         renumera solo — reordenar paradas que un software externo calculó
         sería inventar una ruta.
       parameters:
@@ -7028,7 +7086,15 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404':
-          description: El camión no existe o no tiene orden de paradas aún
+          description: >
+            El camión no existe o no tiene orden de paradas aún.
+
+            ⚠️ ★ v0.45.2 — También responde 404 cuando la secuencia se
+            INVALIDÓ (cambió el conjunto de paradas y se borró). Desde acá
+            NO se distingue de "nunca se importó", y es deliberado: la
+            acción es la misma. El aviso va en el momento de montar o
+            desmontar, que es cuando el admin todavía puede entender qué
+            pasó.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -9829,6 +9895,15 @@ components:
           description: >
             CON ítems: monto se calcula de estas líneas. Si se omite, es la
             modalidad SIN ítems y `manual_amount` es requerido.
+
+            ★ v0.45.2 — `lines: null` ES LO MISMO QUE OMITIRLO. Un cliente
+            que manda el campo explícitamente en null está diciendo lo
+            mismo, y el servidor lo trata igual. Se dice porque "omitir" y
+            "mandar null" son dos lecturas razonables de la misma frase, y
+            la diferencia entre ellas sería un 400 imposible de explicar.
+
+            ⚠️ `lines: []` NO es la modalidad sin ítems: es una solicitud
+            con ítems y ninguno → 400.
           items: { $ref: '#/components/schemas/CreditRequestLine' }
         manual_amount:
           type: number
@@ -10484,7 +10559,9 @@ components:
 
             ★ v0.45.1 — VUELVE A `false` cuando cambia el CONJUNTO de
             paradas: montar una recogida de un cliente que no estaba, o
-            quitar la última recogida de un cliente sin pedidos. La
+            quitar la última recogida de un cliente sin pedidos. ★ v0.45.2 —
+            y las paradas guardadas se BORRAN, porque el manifiesto y
+            `/dispatch/returns` las leen sin mirar este campo. La
             secuencia importada dejó de describir al camión, y `assign`
             exige `has_route` — el camión se detiene hasta que se reimporte,
             que es exactamente lo que tiene que pasar.
