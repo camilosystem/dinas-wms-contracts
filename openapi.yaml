@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.47.0
+  version: 0.47.1
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -53,6 +53,64 @@ info:
     lado, aunque el servidor esté bien.
 
     ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.47.1 — SIN PRECIO NO SE RECHAZA: VALE 1.00 Y DECIDE QUIEN APRUEBA
+    ══════════════════════════════════════════════════════════════════════════
+
+    Corrige una regla de v0.47.0 que NO llegó a implementarse. Ningún
+    cliente depende de ella.
+
+    ★ SE ELIMINA EL 400 `price_unresolved`
+      v0.47.0 decía que si no se podía resolver ningún precio y la línea no
+      traía `proposed_amount`, la creación se rechazaba. Sale.
+
+      LA REGLA, dicha por quien manda el negocio: *"No tengo problema con
+      aquellos ítems que no tienen precio o no se les puede determinar una
+      lista de precio: simplemente pongamos como valor $1 y que sea el
+      encargado de aprobaciones quien determine el monto final. Si lo
+      autoriza por $1, está bien."*
+
+      Es coherente con v0.47.0: quien decide es el aprobador, y el
+      servidor no le pone puertas al que pide. Un 400 por un precio que
+      falta en SAP frena a la persona equivocada por un problema que no es
+      suyo.
+
+    ★ LA CADENA COMPLETA
+      `unit_price` se resuelve así, y `price_source` dice cuál se usó:
+
+        1. INVOICED       Último precio facturado a ese cliente.
+        2. PRICE_LIST_3   Lista 3 del ítem — la sugerencia por defecto.
+        3. PRICE_LIST_1   Lista 1, si no hay 3.
+        4. PRICE_LIST_2   Lista 2, si no hay 3 ni 1.
+        5. PLACEHOLDER    Ninguna: **1.00**, un número puesto a propósito.
+
+      Los pasos 3 y 4 rescatan pocos ítems —se midieron 4 sobre 539— y aun
+      así valen: un precio real de catálogo siempre es mejor punto de
+      partida que un número inventado, y cuestan una línea. El 19% de ítems
+      sin lista 3 casi todo es "sin ningún precio en SAP", que es otro
+      problema y ya tiene su herramienta (`only_without_price` en el
+      catálogo de admin).
+
+    ★ POR QUÉ 1.00 Y NO 0
+      Porque 0 es el bug que empezó todo. `cantidad × null` → 0 guardaba
+      solicitudes en cero que el aprobador podía aprobar sin notar nada:
+      un cero se lee como "no corresponde acreditar", que es una frase con
+      sentido, y por eso pasa desapercibido.
+
+      1.00 no se lee como nada. Tres cajas por 3.00 es un número que
+      obliga a mirar. Y si el aprobador lo aprueba tal cual, es una
+      decisión suya y explícita — que es exactamente lo que se pidió.
+
+    ⚠️ POR ESO `price_source` NO ES OPCIONAL DE MOSTRAR
+      Un PLACEHOLDER y un precio facturado se ven igual: un número. Quien
+      aprueba tiene que ver que ese 1.00 es un relleno y no el precio del
+      producto. El Dashboard debe marcarlo distinto — no basta con
+      mostrarlo entre los demás.
+
+    ★ `unit_price` YA NO PUEDE SER NULL EN SOLICITUDES NUEVAS
+      La cadena siempre termina en un número. Sigue declarado nullable por
+      las solicitudes anteriores a esta versión, que pueden tenerlo.
+
+    ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.47.0 — SE ACREDITA LO QUE LA OFICINA DECIDA ACREDITAR
     ══════════════════════════════════════════════════════════════════════════
 
@@ -85,21 +143,18 @@ info:
       cálculo.
 
       Ahora se resuelve donde estaba el problema. `unit_price` se busca en
-      este orden, y viaja diciendo DE DÓNDE SALIÓ (`price_source`):
+      cadena y viaja diciendo DE DÓNDE SALIÓ (`price_source`).
 
-        1. INVOICED       — último precio facturado a ese cliente.
-        2. PRICE_LIST_3   — lista 3 del ítem, cuando no hay historia.
-        3. NONE           — no se pudo resolver ninguno de los dos.
+      ⚠️ EL FINAL DE ESA CADENA CAMBIÓ EN v0.47.1, ANTES DE IMPLEMENTARSE.
+      Esta versión declaraba un tercer caso `NONE` que rechazaba con 400
+      `price_unresolved` cuando no había ningún precio y la línea no traía
+      `proposed_amount`. Eso NO rige: hoy la cadena termina en un relleno
+      de 1.00 (`PLACEHOLDER`) y la creación nunca falla por falta de
+      precio. Ver el changelog de v0.47.1 y el schema `PriceSource`.
 
-      Y si es NONE y la línea no trae `proposed_amount`, se rechaza con 400
-      `price_unresolved` — nombrando el ítem. Eso NO es una restricción de
-      negocio: el ítem es perfectamente válido, lo único que dice el
-      servidor es *"decime el monto, no lo puedo inventar"*. La diferencia
-      con v0.33.3 es exactamente la que importa: antes se rechazaba la
-      solicitud, ahora se pide el único dato que falta.
-
-      Un `null` NUNCA se convierte en `0`. Esa es la garantía que v0.33.3
-      quería y la que se conserva.
+      Lo que sí rige y no cambió: un precio que no se pudo resolver NUNCA
+      se convierte en `0`. Ésa es la garantía que v0.33.3 quería y la que
+      se conserva.
 
     ★ POR QUÉ LISTA 3 Y NO LA LISTA DEL CLIENTE
       Porque no se está reconstruyendo una venta: se está SUGIRIENDO un
@@ -3932,21 +3987,23 @@ paths:
         cliente sin relacionar factura es práctica corriente. Poner la
         puerta antes del pedido rechaza al que pide, no al que decide.
 
-        ★ v0.47.0 — LO QUE SÍ SE RECHAZA, Y NO ES LO MISMO. Si el servidor
-        no puede resolver `unit_price` por ninguna de sus dos vías
-        (`price_source: NONE`) Y la línea tampoco trae `proposed_amount`
-        → 400 `price_unresolved`, nombrando el ítem.
+        ★ v0.47.1 — TAMPOCO SE RECHAZA POR FALTA DE PRECIO. La creación
+        NUNCA falla por no poder resolver un precio: si no hay ninguno, la
+        línea vale **1.00** y `price_source` viaja en `PLACEHOLDER`. Quien
+        aprueba pone el monto final, y si lo aprueba en 1.00 es una
+        decisión suya.
 
-        No es una restricción de negocio: el ítem es válido y la solicitud
-        también. El servidor solo dice "decime el monto, no lo puedo
-        inventar". Es la garantía que v0.33.3 quería y que se conserva por
-        otra vía: un `unit_price` nulo NUNCA se convierte en 0. Antes, el
-        cálculo hacía `cantidad × null` → 0, la solicitud se guardaba con
-        monto cero y el aprobador veía un cero aprobable sin que nada lo
-        indicara.
+        (v0.47.0 declaraba un 400 `price_unresolved` para ese caso. Se
+        eliminó antes de implementarse.)
 
-        Ver `price_source` en CreditRequestDetailLine para el orden de
-        resolución (facturado → lista 3 → nada).
+        La garantía que v0.33.3 quería se conserva igual: un precio que no
+        se pudo resolver NUNCA se convierte en 0. Ese era el bug —
+        `cantidad × null` → 0 guardaba la solicitud en cero y el aprobador
+        veía un cero aprobable, porque un cero se lee como "no corresponde
+        acreditar" y pasa desapercibido. 1.00 no se lee como nada.
+
+        Ver `price_source` en CreditRequestDetailLine para la cadena
+        completa de resolución.
 
         ★ v0.17.0. Dos modalidades: CON ítems (monto calculado de las líneas)
         o SIN ítems (monto manual + razón, que determina la cuenta G/L).
@@ -10528,14 +10585,14 @@ components:
             Precio unitario de REFERENCIA, resuelto server-side. No es lo
             que se acredita: es de dónde parte el aprobador.
 
-            ★ v0.47.0 — Se resuelve en dos pasos, y `price_source` dice cuál
-            se usó: el último precio facturado a ese cliente; y si no hay
-            historia, la lista 3 del ítem.
+            ★ v0.47.1 — Se resuelve en cadena y `price_source` dice qué
+            eslabón se usó: precio facturado a ese cliente → lista 3 →
+            lista 1 → lista 2 → **1.00** de relleno.
 
-            NULL significa "no se pudo resolver", NUNCA "vale cero". En ese
-            caso la línea tiene que traer `proposed_amount` o la creación se
-            rechaza con 400 `price_unresolved` — un nulo no se convierte en
-            cero en ningún camino.
+            En solicitudes NUEVAS nunca es null: la cadena siempre termina
+            en un número. Sigue declarado nullable por las anteriores a
+            v0.47.1, donde null significa "no se pudo resolver" y NUNCA
+            "vale cero".
         price_source:
           allOf:
             - $ref: '#/components/schemas/PriceSource'
@@ -10556,8 +10613,9 @@ components:
             Lo que el vendedor propuso acreditar. Si no lo envió, el
             servidor lo calculó como `quantity` × `unit_price`.
 
-            ★ v0.47.0 — Cuando `price_source` es NONE, este campo es
-            OBLIGATORIO en la creación: no hay de dónde calcularlo.
+            ★ v0.47.1 — Nunca es obligatorio. Si no se envía, se calcula
+            con el `unit_price` que haya resuelto la cadena, incluido el
+            1.00 de relleno.
 
     CreditRequestSapDocument:
       type: object
@@ -12127,24 +12185,36 @@ components:
 
     PriceSource:
       type: string
-      enum: [INVOICED, PRICE_LIST_3, NONE]
+      enum: [INVOICED, PRICE_LIST_3, PRICE_LIST_1, PRICE_LIST_2, PLACEHOLDER]
       description: >
-        ★ NUEVO en v0.47.0. De dónde salió el `unit_price` de una línea de
-        solicitud de crédito.
+        ★ NUEVO en v0.47.0, cadena completa en v0.47.1. De dónde salió el
+        `unit_price` de una línea de solicitud de crédito. Se prueban en
+        este orden y se usa el primero que resuelva:
 
           INVOICED      Último precio facturado a ESE cliente para ese ítem.
                         Es un hecho de la relación con ese cliente.
-          PRICE_LIST_3  No hay historia de facturación: se sugiere la lista
-                        3 del ítem. Es una sugerencia de catálogo, no una
-                        reconstrucción de una venta — no se usa la lista del
-                        cliente justamente para no simular una precisión que
+          PRICE_LIST_3  Sin historia de facturación: lista 3 del ítem. Es la
+                        sugerencia por defecto — una referencia de catálogo,
+                        no la reconstrucción de una venta. No se usa la
+                        lista del cliente, para no simular una precisión que
                         no existe.
-          NONE          No se pudo resolver ninguno de los dos.
-                        `unit_price` viene null y la línea DEBE traer
-                        `proposed_amount`.
+          PRICE_LIST_1  Sin lista 3. Rescata pocos ítems, pero un precio
+          PRICE_LIST_2  real de catálogo siempre es mejor punto de partida
+                        que un número inventado.
+          PLACEHOLDER   El ítem no tiene NINGÚN precio en SAP. `unit_price`
+                        vale **1.00**: un relleno puesto a propósito para
+                        que la solicitud pueda crearse igual y decida quien
+                        aprueba.
 
-        Existe porque los tres casos se ven iguales desde afuera —un número,
-        o un hueco— y exigen distinta confianza de quien aprueba.
+        ⚠️ PLACEHOLDER NO SE MUESTRA COMO LOS DEMÁS. Un relleno y un precio
+        facturado se ven idénticos —un número— y quien aprueba tiene que
+        saber cuál está mirando. La pantalla debe marcarlo distinto; no
+        alcanza con mostrarlo entre los otros.
+
+        Y no es 0 a propósito: un cero se lee como "no corresponde
+        acreditar", que es una frase con sentido, y por eso pasa
+        desapercibido. Ése fue el bug que originó todo esto (`cantidad ×
+        null` → 0). 1.00 no se lee como nada y obliga a mirar.
 
     PriceListNumber:
       type: integer
