@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.46.0
+  version: 0.47.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -53,6 +53,123 @@ info:
     lado, aunque el servidor esté bien.
 
     ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.47.0 — SE ACREDITA LO QUE LA OFICINA DECIDA ACREDITAR
+    ══════════════════════════════════════════════════════════════════════════
+
+    ★ SE ELIMINA EL RECHAZO `item_never_invoiced_to_client` (v0.33.3)
+      Ya no hay ninguna restricción de ítem ni de factura para crear una
+      solicitud de crédito. Cualquier `item_code` del catálogo, con o sin
+      `invoice_doc_num`.
+
+      LA REGLA DE NEGOCIO, dicha por quien la manda: *"No debe haber
+      restricciones de Item o facturas para las solicitudes de Crédito,
+      Siempre habrá una persona que las revisa y las autoriza o las
+      rechaza. También es una práctica común hacer créditos a un cliente
+      sin necesidad de relacionar la factura: a veces simplemente se le
+      autoriza un monto y se le acredita a la cuenta del cliente."*
+
+      v0.33.3 trataba una solicitud como una afirmación contable que había
+      que poder respaldar. No lo es: es un PEDIDO, y el respaldo lo pone el
+      aprobador cuando decide. Poner la puerta antes del pedido rechaza al
+      que pide, no al que decide.
+
+    ★ EL BUG QUE v0.33.3 ARREGLABA SIGUE MUERTO, POR OTRA VÍA
+      Aquel rechazo no nació de una política: nació de un bug. Cuando el
+      último precio facturado no se podía resolver, `unit_price` quedaba en
+      null y el cálculo hacía `cantidad × null` → **0**. La solicitud se
+      guardaba con monto 0, el `calculated_amount` lo sumaba en silencio, y
+      el aprobador veía un cero aprobable.
+
+      Rechazar la solicitud mataba el bug, pero de la forma más cara: le
+      cerraba la puerta al caso legítimo para no tener que resolver el
+      cálculo.
+
+      Ahora se resuelve donde estaba el problema. `unit_price` se busca en
+      este orden, y viaja diciendo DE DÓNDE SALIÓ (`price_source`):
+
+        1. INVOICED       — último precio facturado a ese cliente.
+        2. PRICE_LIST_3   — lista 3 del ítem, cuando no hay historia.
+        3. NONE           — no se pudo resolver ninguno de los dos.
+
+      Y si es NONE y la línea no trae `proposed_amount`, se rechaza con 400
+      `price_unresolved` — nombrando el ítem. Eso NO es una restricción de
+      negocio: el ítem es perfectamente válido, lo único que dice el
+      servidor es *"decime el monto, no lo puedo inventar"*. La diferencia
+      con v0.33.3 es exactamente la que importa: antes se rechazaba la
+      solicitud, ahora se pide el único dato que falta.
+
+      Un `null` NUNCA se convierte en `0`. Esa es la garantía que v0.33.3
+      quería y la que se conserva.
+
+    ★ POR QUÉ LISTA 3 Y NO LA LISTA DEL CLIENTE
+      Porque no se está reconstruyendo una venta: se está SUGIRIENDO un
+      número para que el aprobador tenga de dónde partir. Cuando la venta
+      existió, su precio real ya llega por la vía INVOICED. Cuando no
+      existió, no hay venta que reconstruir, y elegir la lista del cliente
+      simularía una precisión que no hay.
+
+      Y es una sugerencia en el sentido literal: lo más probable es que
+      quien autoriza la BAJE. Por eso viaja con `price_source`, que es lo
+      que le dice al aprobador cuánto confiar en el número que está viendo.
+
+    ★ QUÉ SIGNIFICAN LAS LÍNEAS AHORA
+      Cambia el peso de `lines`. Ya no son la reconstrucción contable de
+      una venta: son sobre todo **la referencia de qué y cuánto hay que
+      recoger** —lo que el driver va a buscar cuando la solicitud además es
+      una recogida (v0.45.0)— y una propuesta de monto que una persona
+      ajusta.
+
+      La modalidad SIN ítems sigue existiendo y sigue siendo legítima: un
+      monto acreditado a la cuenta del cliente, sin ítems y sin factura.
+
+    ★ UN COSTO QUE DESAPARECE
+      v0.33.3 dejaba escrito su propio precio: una devolución real de un
+      ítem sin historia con ese cliente —código cambiado, vendido bajo otro
+      código, entregado fuera del flujo normal— quedaba rechazada, y la
+      única salida era una solicitud SIN ítems, que genera nota de SERVICIO
+      y **no devuelve stock**. La plata se acreditaba y la mercancía que
+      volvió físicamente no reingresaba al inventario.
+
+      Con la restricción afuera, esos casos vuelven a poder cargarse CON
+      ítems, que es la vía que sí mueve inventario. El costo estaba
+      documentado y aceptado; ya no hay que pagarlo.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.46.1 — `sap-status` SIEMPRE FUE SOLO DE ADMIN
+    ══════════════════════════════════════════════════════════════════════════
+
+    Solo TEXTO, y corrige un dato FALSO que v0.46.0 publicó.
+
+    v0.46.0 dice que `GET /admin/sap-status` "hasta ahora lo leía cualquier
+    usuario autenticado" y que la restricción a ADMIN es un cambio de esta
+    versión. Es falso en las dos mitades: el endpoint vive en un controlador
+    con `[Authorize(Roles = ADMIN)]` a nivel de clase desde el día que
+    nació, y hay un test que lo afirma desde entonces —un token de vendedor
+    recibe 403—.
+
+    Lo único que v0.46.0 cambió fue DECLARARLO. La autorización no se tocó
+    porque no había nada que tocar.
+
+    ★ POR QUÉ SE CORRIGE EN VEZ DE DEJARLO PASAR
+      Un contrato que narra mal la historia de una autorización es peor que
+      uno que no la narra. Alguien que lea v0.46.0 dentro de seis meses va a
+      concluir que hubo una ventana en la que cualquier usuario autenticado
+      leía errores crudos de SAP, y esa ventana no existió. Sobre esa
+      conclusión falsa se toman decisiones reales: una auditoría, un
+      cambio "de vuelta", una explicación a alguien de afuera.
+
+      Lo que sí sigue siendo cierto y se mantiene escrito: `last_error` es
+      texto crudo de SAP y por eso el endpoint es de ADMIN. La razón no
+      cambia; lo que cambia es que no es nueva.
+
+    ★ DE DÓNDE SALIÓ EL ERROR
+      De un dato mal reportado que yo publiqué sin verificar contra el
+      proceso. Es la misma falla que v0.45.3 corrigió en `/route`, y la
+      regla que queda es la misma: **lo que el contrato afirma sobre el
+      comportamiento del proceso se verifica contra el proceso**, no contra
+      lo que alguien recuerda del proceso.
+
+    ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.46.0 — LO QUE ENCONTRÓ EL BARRIDO CONTRA EL PROCESO
     ══════════════════════════════════════════════════════════════════════════
 
@@ -71,17 +188,17 @@ info:
       qué error falló, y si lleva demasiado sin actualizarse. Eso hoy sólo
       se puede saber entrando a la base.
 
-      ⚠️ CAMBIA LA AUTORIZACIÓN: hasta ahora lo leía cualquier usuario
-      autenticado. `last_error` es texto de error crudo de SAP —nombres de
-      objetos, detalles de conexión, a veces datos— y no hay ninguna razón
-      para que un vendedor con el teléfono en la calle pueda leerlo. Queda
-      restringido a ADMIN, igual que su hermano
-      `POST /admin/sap-refresh/trigger`, que siempre lo estuvo.
+      ⚠️ CORREGIDO EN v0.46.1 — lo que sigue era FALSO y se deja tachado a
+      propósito, porque el contrato ya se publicó con esto: v0.46.0 decía
+      que el endpoint "hasta ahora lo leía cualquier usuario autenticado" y
+      que la restricción a ADMIN era un cambio de esta versión. No lo era:
+      es solo de ADMIN desde que nació, con test que lo afirma. Lo único
+      que v0.46.0 cambió fue declararlo, y NINGUNA app puede haberse roto.
 
-      Este es el único cambio del bloque que PUEDE ROMPER a alguien: si
-      alguna de las tres apps lo llamara, empezaría a recibir 403. Hay que
-      verificarlo en los repos de iOS ANTES de aplicar la restricción — no
-      después.
+      Lo que sí es cierto: `last_error` es texto de error crudo de SAP
+      —nombres de objetos, detalles de conexión, a veces datos— y por eso
+      el endpoint es de ADMIN, igual que su hermano
+      `POST /admin/sap-refresh/trigger`.
 
     ★ 2. `not_delivered_orders[].reason` PASA A LLAMARSE `order_reason`
       El contrato decía `reason` y el proceso sirve `order_reason`. Gana el
@@ -1510,6 +1627,11 @@ info:
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.33.3 — NO SE ACREDITA LO QUE NUNCA SE VENDIÓ
     ══════════════════════════════════════════════════════════════════════════
+
+    ⚠️ REVERTIDO EN v0.47.0. Este bloque se conserva porque explica un bug
+    real —`cantidad × null` → 0— pero la REGLA que introdujo ya NO rige: no
+    hay ninguna restricción de ítem ni de factura para crear una solicitud.
+    Ver el changelog de v0.47.0 antes de implementar nada de lo que sigue.
 
     Incluye todo lo de v0.33.2.
 
@@ -3411,10 +3533,14 @@ paths:
         cuadra, un cliente que no aparece— se puede saber en un click si el
         espejo se refrescó o si lleva horas fallando.
 
-        ⚠️ v0.46.0 CAMBIA LA AUTORIZACIÓN: hasta ahora lo leía cualquier
-        usuario autenticado. `last_error` es texto crudo de error de SAP y
-        no hay razón para que un vendedor en la calle lo lea. Queda en
-        ADMIN, igual que `POST /admin/sap-refresh/trigger`.
+        ⚠️ SOLO ADMIN, Y SIEMPRE LO FUE. `last_error` es texto crudo de
+        error de SAP y no hay razón para que un vendedor en la calle lo
+        lea. Igual que `POST /admin/sap-refresh/trigger`.
+
+        ★ v0.46.1 — v0.46.0 afirmó acá que la restricción era nueva y que
+        antes lo leía cualquier usuario autenticado. Era falso: el
+        controlador exige ADMIN desde el día uno, con test. Ver el
+        changelog de v0.46.1.
       responses:
         '200':
           description: Estado de cada fuente del espejo
@@ -3795,36 +3921,32 @@ paths:
         Y quien la carga queda en `created_by`, igual que en los pedidos
         desde v0.30.0. Ver ambos campos en CreditRequestDetail.
 
-        ★ v0.33.3 — RECHAZA (400, code=`item_never_invoiced_to_client`) si
-        algún `item_code` de las líneas nunca se le facturó a ese cliente.
+        ★ v0.47.0 — ELIMINADO el rechazo `item_never_invoiced_to_client`
+        que introdujo v0.33.3. NO HAY NINGUNA RESTRICCIÓN DE ÍTEM NI DE
+        FACTURA: cualquier `item_code` del catálogo, con o sin
+        `invoice_doc_num`.
 
-        No se puede acreditar algo que el cliente nunca compró. Rechaza
-        AUNQUE la línea traiga `proposed_amount`: el problema no es que
-        falte el cálculo, es que la solicitud no es legítima.
+        Una solicitud es un PEDIDO, no una afirmación contable que haya que
+        respaldar de antemano. Siempre hay una persona que la revisa y la
+        autoriza o la rechaza, y acreditarle un monto a la cuenta de un
+        cliente sin relacionar factura es práctica corriente. Poner la
+        puerta antes del pedido rechaza al que pide, no al que decide.
 
-        El error nombra el `item_code` en cuestión, para que el vendedor
-        sepa cuál corregir sin adivinar.
+        ★ v0.47.0 — LO QUE SÍ SE RECHAZA, Y NO ES LO MISMO. Si el servidor
+        no puede resolver `unit_price` por ninguna de sus dos vías
+        (`price_source: NONE`) Y la línea tampoco trae `proposed_amount`
+        → 400 `price_unresolved`, nombrando el ítem.
 
-        QUÉ LO REVELÓ: antes, cuando el último precio facturado no se podía
-        resolver, `unit_price` quedaba en null y el cálculo hacía
-        `cantidad × null` → **0**. La solicitud se creaba con monto 0 y
-        nada lo indicaba — el `calculated_amount` de la cabecera sumaba ese
-        0 en silencio, y el aprobador veía un cero que podía aprobar tal
-        cual.
+        No es una restricción de negocio: el ítem es válido y la solicitud
+        también. El servidor solo dice "decime el monto, no lo puedo
+        inventar". Es la garantía que v0.33.3 quería y que se conserva por
+        otra vía: un `unit_price` nulo NUNCA se convierte en 0. Antes, el
+        cálculo hacía `cantidad × null` → 0, la solicitud se guardaba con
+        monto cero y el aprobador veía un cero aprobable sin que nada lo
+        indicara.
 
-        Eso contradecía la semántica declarada: `unit_price: null` significa
-        "no se pudo resolver", NO "vale cero".
-
-        ⚠️ CONSECUENCIA A TENER PRESENTE: si una devolución REAL trae un ítem
-        que no se le facturó a ese cliente —código cambiado, vendido bajo
-        otro código de cliente, entregado fuera del flujo normal—, la
-        solicitud CON ítems queda rechazada y la única salida es una SIN
-        ítems con monto manual.
-
-        Y esa genera una nota de SERVICIO, que **no devuelve stock**. O sea
-        que la plata se acredita igual, pero la mercancía que volvió
-        físicamente no reingresa al inventario por esa vía. Es el costo
-        aceptado de no permitir créditos sin respaldo de venta.
+        Ver `price_source` en CreditRequestDetailLine para el orden de
+        resolución (facturado → lista 3 → nada).
 
         ★ v0.17.0. Dos modalidades: CON ítems (monto calculado de las líneas)
         o SIN ítems (monto manual + razón, que determina la cuenta G/L).
@@ -10403,21 +10525,39 @@ components:
           format: double
           nullable: true
           description: >
-            Último precio facturado al cliente para ese ítem, resuelto
-            server-side. Es referencia para el aprobador, no lo que se
-            acredita.
+            Precio unitario de REFERENCIA, resuelto server-side. No es lo
+            que se acredita: es de dónde parte el aprobador.
 
-            ★ v0.33.3 — NULL significa "no se pudo resolver", NUNCA "vale
-            cero". Desde esta versión no debería aparecer en solicitudes
-            nuevas: si el ítem nunca se le facturó al cliente, la creación
-            se rechaza con 400 en vez de guardar una línea sin precio.
-            Puede seguir apareciendo en solicitudes anteriores.
+            ★ v0.47.0 — Se resuelve en dos pasos, y `price_source` dice cuál
+            se usó: el último precio facturado a ese cliente; y si no hay
+            historia, la lista 3 del ítem.
+
+            NULL significa "no se pudo resolver", NUNCA "vale cero". En ese
+            caso la línea tiene que traer `proposed_amount` o la creación se
+            rechaza con 400 `price_unresolved` — un nulo no se convierte en
+            cero en ningún camino.
+        price_source:
+          allOf:
+            - $ref: '#/components/schemas/PriceSource'
+          description: >
+            ★ NUEVO en v0.47.0. DE DÓNDE salió `unit_price`. Es lo que le
+            dice al aprobador cuánto confiar en el número que está viendo:
+            un precio facturado es un hecho de ese cliente; la lista 3 es
+            una sugerencia de catálogo, que lo más probable es que el
+            aprobador baje.
+
+            Sin este campo los dos casos se ven idénticos —un número— y se
+            aprobarían con la misma confianza, que es justo lo que no
+            corresponde.
         proposed_amount:
           type: number
           format: double
           description: >
             Lo que el vendedor propuso acreditar. Si no lo envió, el
             servidor lo calculó como `quantity` × `unit_price`.
+
+            ★ v0.47.0 — Cuando `price_source` es NONE, este campo es
+            OBLIGATORIO en la creación: no hay de dónde calcularlo.
 
     CreditRequestSapDocument:
       type: object
@@ -11984,6 +12124,27 @@ components:
           CUPO_EXCEDIDO  balance + total de la orden > credit_limit
           MORA           tiene facturas vencidas más allá de los días de gracia
           CUPO_Y_MORA    ambas
+
+    PriceSource:
+      type: string
+      enum: [INVOICED, PRICE_LIST_3, NONE]
+      description: >
+        ★ NUEVO en v0.47.0. De dónde salió el `unit_price` de una línea de
+        solicitud de crédito.
+
+          INVOICED      Último precio facturado a ESE cliente para ese ítem.
+                        Es un hecho de la relación con ese cliente.
+          PRICE_LIST_3  No hay historia de facturación: se sugiere la lista
+                        3 del ítem. Es una sugerencia de catálogo, no una
+                        reconstrucción de una venta — no se usa la lista del
+                        cliente justamente para no simular una precisión que
+                        no existe.
+          NONE          No se pudo resolver ninguno de los dos.
+                        `unit_price` viene null y la línea DEBE traer
+                        `proposed_amount`.
+
+        Existe porque los tres casos se ven iguales desde afuera —un número,
+        o un hueco— y exigen distinta confianza de quien aprueba.
 
     PriceListNumber:
       type: integer
