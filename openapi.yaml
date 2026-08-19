@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.45.2
+  version: 0.45.3
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -51,6 +51,50 @@ info:
     calcule "hoy" con el reloj UTC —por ejemplo con `toISOString()`— manda
     el día equivocado durante esa franja y reproduce el problema desde su
     lado, aunque el servidor esté bien.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.45.3 — EL CONTRATO SE ALINEA AL CÓDIGO EN `/route`
+    ══════════════════════════════════════════════════════════════════════════
+
+    Solo TEXTO, y esta vez la corrección va contra el contrato: lo que decía
+    era erróneo, y el proceso hacía lo correcto.
+
+    ★ QUÉ DECÍA MAL
+      `GET /admin/trucks/{truck_id}/route` declaraba 404 para "el camión no
+      existe **o no tiene orden de paradas aún**". El middleware, desde
+      antes de este bloque, responde 200 con `has_route: false` y `stops:
+      []` cuando el camión existe y no tiene secuencia.
+
+      El código tiene razón y el contrato estaba mal. Un 404 mezcla dos
+      situaciones que exigen respuestas distintas de quien llama —"ese
+      camión no existe" y "ese camión existe y todavía no tiene ruta"— y
+      además hace inútil a `has_route`, que existe justamente para decir la
+      segunda. Una respuesta que nunca puede traer `false` en ese campo no
+      necesita el campo.
+
+      v0.45.2 empeoró esto: escribió la consecuencia de la invalidación
+      DENTRO de la descripción del 404, consagrando un comportamiento que
+      nunca existió. La garantía que quería dar sigue en pie —después de
+      invalidar, el estado es idéntico a "nunca se importó"— y ahora se
+      expresa donde corresponde.
+
+    ★ CÓMO QUEDA
+      · 404 — SOLO si el camión no existe.
+      · 200 con `has_route: false` y `stops: []` — el camión existe y no
+        tiene secuencia, sea porque nunca se importó o porque se invalidó.
+        Indistinguible entre esos dos casos, a propósito: la acción es la
+        misma.
+
+    ★ CÓMO SE ENCONTRÓ, Y POR QUÉ IMPORTA MÁS QUE EL ERROR
+      No se encontró leyendo el código: se encontró CRUZANDO el contrato
+      contra el OpenAPI que sirve el proceso, endpoint por endpoint. Es la
+      única forma de ver esta clase de divergencia — el código funciona, el
+      contrato se lee bien, y la diferencia sólo aparece cuando se los pone
+      lado a lado.
+
+      Es la sexta vez en este proyecto que el contrato y la implementación
+      difieren sin que nada falle. Todas las anteriores se encontraron por
+      casualidad.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.45.2 — INVALIDAR BORRA LAS PARADAS, Y `lines: null`
@@ -7071,7 +7115,16 @@ paths:
     get:
       tags: [route-stops]
       summary: Ver el orden de paradas actual del camión
-      description: REQUIERE rol ADMIN. El orden guardado (si existe).
+      description: >
+        REQUIERE rol ADMIN. El orden guardado (si existe).
+
+        ★ v0.45.3 — "No tiene ruta" NO es un 404. Un camión que existe y no
+        tiene secuencia responde 200 con `has_route: false` y `stops: []`.
+        El contrato declaraba 404 y estaba mal: mezclaba "ese camión no
+        existe" con "ese camión existe y todavía no tiene ruta", que exigen
+        respuestas distintas de quien llama, y dejaba sin uso a `has_route`
+        —una respuesta que nunca puede traer `false` en ese campo no
+        necesita el campo—.
       parameters:
         - name: truck_id
           in: path
@@ -7079,7 +7132,17 @@ paths:
           schema: { type: string, format: uuid }
       responses:
         '200':
-          description: El orden de paradas
+          description: >
+            El orden de paradas. ★ v0.45.3 — También es la respuesta cuando
+            NO hay secuencia: `has_route: false`, `stops: []`.
+
+            ⚠️ Ese estado es idéntico se haya llegado a él por no haber
+            importado nunca o por una INVALIDACIÓN (montar o desmontar una
+            recogida que cambió el conjunto de paradas — ver v0.45.1 y
+            v0.45.2). Es deliberado: la acción es la misma, importar. Por
+            eso el aviso al admin va en la respuesta de montar/desmontar,
+            que trae `has_route: false` y es el único momento en que se
+            puede explicar POR QUÉ desapareció la secuencia.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TruckRoute' }
@@ -7087,14 +7150,8 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404':
           description: >
-            El camión no existe o no tiene orden de paradas aún.
-
-            ⚠️ ★ v0.45.2 — También responde 404 cuando la secuencia se
-            INVALIDÓ (cambió el conjunto de paradas y se borró). Desde acá
-            NO se distingue de "nunca se importó", y es deliberado: la
-            acción es la misma. El aviso va en el momento de montar o
-            desmontar, que es cuando el admin todavía puede entender qué
-            pasó.
+            ★ v0.45.3 — SOLO si el camión no existe. Antes decía "o no tiene
+            orden de paradas aún", y eso era falso.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
