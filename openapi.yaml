@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.50.0
+  version: 0.51.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -106,6 +106,59 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.51.0 — DESARMAR UN PALLET, Y BORRAR UNO CREADO POR ERROR
+    ══════════════════════════════════════════════════════════════════════════
+
+    Un bodeguero se equivoca: crea un pallet de más, o arma uno que después
+    no le sirve. Hasta acá un pallet se podía crear y no se podía deshacer.
+
+    ★ DOS VERBOS, PORQUE SON DOS ACTOS FÍSICOS DISTINTOS
+      · `POST .../pallets/{pallet_id}/clear` — DESARMAR. Baja todo lo que
+        tiene y lo devuelve a "sin repartir". El pallet sigue existiendo,
+        vacío.
+      · `DELETE .../pallets/{pallet_id}` — RETIRAR el pallet. Solo si está
+        VACÍO → 409 `pallet_not_empty` si tiene algo.
+
+      Separados a propósito. Borrar un pallet lleno y devolver su contenido
+      en el mismo movimiento es una operación que hace dos cosas y muestra
+      una: el bodeguero ve desaparecer el pallet y no ve que le volvieron
+      diez ítems a la lista de pendientes. Desarmar primero lo obliga a ver
+      qué quedó suelto, que es lo que después tiene que volver a ubicar.
+
+      Y es el orden del mundo real: primero se baja la mercancía, después se
+      retira el pallet.
+
+    ★ `clear` DEVUELVE LO QUE LIBERÓ
+      No un OK a secas: la lista de lo que quedó sin repartir. Sin eso, el
+      bodeguero desarma un pallet y tiene que salir a buscar qué se soltó.
+
+    ★ EL NÚMERO DE UN PALLET BORRADO NO SE REUSA
+      Si se borra el Regular-2, el próximo pallet regular es el Regular-3.
+      El correlativo nunca retrocede.
+
+      Porque la etiqueta es FÍSICA: alguien pudo haberla escrito en el
+      plástico o pegado en el pallet antes de que se borrara. Dos pallets
+      con el mismo rótulo el mismo día es un error que aparece recién en la
+      calle, cuando el driver busca "Queens-Regular-2" y hay dos, o hubo
+      dos.
+
+    ⚠️ CANTIDAD 0 NO ES UNA ASIGNACIÓN — Y NO VIAJA
+      Al bajar una asignación a cero, el registro interno puede quedar; lo
+      que NO puede es salir. `in_pallets`, `Pallet.assignments` y
+      `PalletPlacement` NUNCA incluyen entradas con `quantity: 0`.
+
+      Un cero ahí es un fantasma: dice "este ítem está en el pallet A"
+      cuando ya no hay nada de ese ítem en A. Lo vería el bodeguero al
+      revisar, el driver en su parada, y el manifiesto lo imprimiría —
+      "Pallet A: 0 cajas" es una instrucción para ir a buscar algo que no
+      está.
+
+      Se resuelve EN EL SERVIDOR y no en cada cliente a propósito: tres
+      clientes filtrando la misma condición por separado son tres chances de
+      que uno se olvide, y nadie los compara. Mismo criterio que
+      `out_of_stock` desde v0.40.0.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.50.0 — LA PERTENENCIA SE VALIDA CONTRA SAP, NO CONTRA EL LOGIN
@@ -8140,6 +8193,122 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /picking/trucks/{truck_id}/pallets/{pallet_id}/clear:
+    post:
+      tags: [distribution]
+      summary: Desarmar un pallet (bajar todo su contenido)
+      description: >
+        ★ NUEVO en v0.51.0. REQUIERE rol BODEGUERO con carril en este camión.
+
+        Baja TODO lo que tiene el pallet y lo devuelve a "sin repartir". El
+        pallet sigue existiendo, vacío, y se le puede volver a asignar.
+
+        Es el paso previo a borrarlo, y también sirve solo: el bodeguero
+        armó un pallet que no le sirve y quiere empezarlo de nuevo sin
+        perder la etiqueta.
+
+        REGLAS:
+          · El pallet debe ser DE SU CARRIL → 403.
+          · Solo con el carril abierto; si ya cerró → 409.
+
+        Idempotente: desarmar un pallet vacío devuelve 200 con la lista
+        vacía.
+      parameters:
+        - name: truck_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: pallet_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: >
+            Pallet desarmado. Devuelve QUÉ QUEDÓ SIN REPARTIR — no un OK a
+            secas: sin esa lista el bodeguero tiene que salir a buscar qué
+            se soltó.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pallet: { $ref: '#/components/schemas/Pallet' }
+                  released:
+                    type: array
+                    description: Lo que volvió a estar sin repartir.
+                    items:
+                      type: object
+                      properties:
+                        order_uuid: { type: string, format: uuid }
+                        order_number: { type: string }
+                        client_name: { type: string }
+                        item_code: { type: string }
+                        item_name: { type: string }
+                        quantity:
+                          type: number
+                          format: double
+                          description: Cuánto de ese ítem quedó sin repartir.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: El carril ya está cerrado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /picking/trucks/{truck_id}/pallets/{pallet_id}:
+    delete:
+      tags: [distribution]
+      summary: Retirar un pallet (creado de más o que ya no se usa)
+      description: >
+        ★ NUEVO en v0.51.0. REQUIERE rol BODEGUERO con carril en este camión.
+
+        Solo si el pallet está VACÍO → 409 `pallet_not_empty` si tiene algo,
+        con el detalle de qué tiene. Para vaciarlo primero está
+        `POST .../clear`.
+
+        ⚠️ NO se borra con contenido y ya. Hacerlo sería una operación que
+        hace dos cosas y muestra una: el pallet desaparece de la pantalla y
+        el bodeguero NO ve que le volvieron diez ítems a la lista de
+        pendientes. Desarmar primero lo obliga a ver qué quedó suelto, que
+        es justamente lo que tiene que volver a ubicar. Es además el orden
+        del mundo real: primero se baja la mercancía, después se retira el
+        pallet.
+
+        ★ EL NÚMERO NO SE REUSA. Si se borra el Regular-2, el próximo pallet
+        regular es el Regular-3. La etiqueta es FÍSICA —alguien pudo
+        haberla escrito en el plástico— y dos pallets con el mismo rótulo el
+        mismo día es un error que aparece en la calle, cuando el driver
+        busca uno y hay dos.
+
+        REGLAS:
+          · El pallet debe ser DE SU CARRIL → 403.
+          · Solo con el carril abierto; si ya cerró → 409.
+      parameters:
+        - name: truck_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: pallet_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204':
+          description: Pallet retirado
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            `pallet_not_empty` — todavía tiene contenido (el cuerpo lo
+            detalla), o el carril ya está cerrado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /picking/trucks/{truck_id}/assign-to-pallet:
     post:
       tags: [distribution]
@@ -11533,7 +11702,11 @@ components:
         pallet_id: { type: string, format: uuid }
         pallet_label:
           type: string
-          description: La etiqueta física del pallet (ej. "Queens-Regular-1").
+          description: >
+            La etiqueta física del pallet (ej. "Queens-Regular-1").
+
+            ★ v0.51.0 — Los correlativos NO se reusan: si se borró el
+            Regular-2, no vuelve a existir un Regular-2 en ese camión.
         quantity:
           type: number
           format: double
@@ -11556,7 +11729,13 @@ components:
             numeran independientemente (Regular-1, Regular-2 / Frozen-1).
         assignments:
           type: array
-          description: Qué hay en el pallet (ítem, cantidad, de qué pedido).
+          description: >
+            Qué hay en el pallet (ítem, cantidad, de qué pedido).
+
+            ⚠️ ★ v0.51.0 — NUNCA trae entradas con `quantity: 0`. Bajar una
+            asignación a cero puede dejar el registro interno, pero un cero
+            no es una asignación: es la ausencia de una. Si viajara, el
+            pallet diría que tiene un ítem que ya no tiene.
           items:
             type: object
             properties:
@@ -11640,7 +11819,14 @@ components:
                 description: Cuánto falta por repartir a este pedido.
               in_pallets:
                 type: array
-                description: En qué pallets ya está y cuánto.
+                description: >
+                  En qué pallets ya está y cuánto.
+
+                  ⚠️ ★ v0.51.0 — NUNCA trae entradas con `quantity: 0`. Un
+                  ítem que se movió del pallet A al B aparece solo en el B;
+                  el A no queda como un cero. El filtrado es del SERVIDOR,
+                  no de cada cliente: tres clientes aplicando la misma regla
+                  por separado son tres chances de que uno se la olvide.
                 items:
                   type: object
                   properties:
