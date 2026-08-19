@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.47.1
+  version: 0.47.2
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -51,6 +51,51 @@ info:
     calcule "hoy" con el reloj UTC —por ejemplo con `toISOString()`— manda
     el día equivocado durante esa franja y reproduce el problema desde su
     lado, aunque el servidor esté bien.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.47.2 — `price_source` PUEDE SER NULL, Y UN PRECIO 0 ES AUSENCIA
+    ══════════════════════════════════════════════════════════════════════════
+
+    Solo TEXTO. Dos cosas que la implementación resolvió bien por criterio
+    propio y que el contrato no decía — que es exactamente cuándo hay que
+    escribirlas, antes de que el próximo las resuelva distinto.
+
+    ★ 1. `price_source` ES NULLABLE, Y NULL NO ES UN ORIGEN MÁS
+      v0.47.1 lo declaró obligatorio. No puede serlo: las solicitudes
+      anteriores existen y de la mayoría no se puede afirmar de dónde salió
+      su precio.
+
+      El backfill solo afirma lo demostrable — `unit_price > 0` era el
+      único camino que resolvía antes, así que esas son INVOICED. Las que
+      quedaron en 0 son las víctimas del bug original y **ningún valor del
+      enum es cierto para ellas**: no son PLACEHOLDER, que significa
+      exactamente 1.00. Inventarles un origen haría pasar por resuelto un
+      precio que nunca lo estuvo.
+
+      Entonces NULL significa una sola cosa: *"no se puede afirmar de dónde
+      salió"*. Quien aprueba tiene que verlo como lo que es —un dato sin
+      procedencia— y no como una categoría más.
+
+      ⚠️ ESTO ES LO QUE EL BARRIDO NO PUEDE VER. Las cuatro capas comparan
+      NOMBRES de propiedades: `price_source` está en los dos documentos y
+      la capa 4 queda verde igual, con el contrato diciendo "siempre viene"
+      y el proceso mandando null. Es la misma ceguera que dejó pasar el 404
+      de `/route`, con otra cara.
+
+    ★ 2. UN PRECIO 0 SE TRATA COMO AUSENTE, EN CUALQUIER ESLABÓN
+      En el espejo, "sin precio" no es null: es **0**. Las tres listas son
+      decimales no nulos, así que un ítem sin precio cargado trae 0, no un
+      hueco.
+
+      Cada eslabón de la cadena pregunta `> 0`, no `!= null`. Preguntar por
+      null aceptaría el 0 como precio válido y reintroduciría el bug por la
+      puerta de al lado: la solicitud volvería a guardarse en cero, ahora
+      con un `price_source` que afirma que el precio se resolvió.
+
+      Consecuencia deliberada: un ítem cuya lista 3 vale 0 cae al eslabón
+      siguiente, y si ninguno resuelve termina en PLACEHOLDER 1.00. Un
+      artículo vendible con precio cero no es un precio, es un dato que
+      falta.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.47.1 — SIN PRECIO NO SE RECHAZA: VALE 1.00 Y DECIDE QUIEN APRUEBA
@@ -10596,6 +10641,7 @@ components:
         price_source:
           allOf:
             - $ref: '#/components/schemas/PriceSource'
+          nullable: true
           description: >
             ★ NUEVO en v0.47.0. DE DÓNDE salió `unit_price`. Es lo que le
             dice al aprobador cuánto confiar en el número que está viendo:
@@ -10606,6 +10652,16 @@ components:
             Sin este campo los dos casos se ven idénticos —un número— y se
             aprobarían con la misma confianza, que es justo lo que no
             corresponde.
+
+            ★ v0.47.2 — NULLABLE, y NULL no es un origen más: significa "no
+            se puede afirmar de dónde salió". Aparece en solicitudes
+            anteriores a v0.47.1 cuyo precio quedó en 0 por el bug que
+            v0.47.0 describe. Ningún valor del enum es cierto para ellas —
+            en particular NO son PLACEHOLDER, que significa exactamente
+            1.00. Se dejan sin origen a propósito: inventarles uno haría
+            pasar por resuelto un precio que nunca lo estuvo.
+
+            En solicitudes nuevas siempre viene con valor.
         proposed_amount:
           type: number
           format: double
@@ -12205,6 +12261,16 @@ components:
                         vale **1.00**: un relleno puesto a propósito para
                         que la solicitud pueda crearse igual y decida quien
                         aprueba.
+
+        ⚠️ ★ v0.47.2 — UN PRECIO 0 CUENTA COMO AUSENTE en todos los
+        eslabones. En el espejo "sin precio" no es un hueco: es 0, porque
+        las listas son decimales no nulos. Cada eslabón se prueba con
+        `> 0`; preguntar por null aceptaría el 0 como precio bueno y
+        devolvería el bug por la puerta de al lado — la solicitud otra vez
+        en cero, ahora con un `price_source` afirmando que se resolvió.
+
+        Un ítem cuya lista 3 vale 0 cae al eslabón siguiente. Un artículo
+        vendible con precio cero no es un precio: es un dato que falta.
 
         ⚠️ PLACEHOLDER NO SE MUESTRA COMO LOS DEMÁS. Un relleno y un precio
         facturado se ven idénticos —un número— y quien aprueba tiene que
