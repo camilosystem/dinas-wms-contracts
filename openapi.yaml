@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.45.3
+  version: 0.46.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -51,6 +51,80 @@ info:
     calcule "hoy" con el reloj UTC —por ejemplo con `toISOString()`— manda
     el día equivocado durante esa franja y reproduce el problema desde su
     lado, aunque el servidor esté bien.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.46.0 — LO QUE ENCONTRÓ EL BARRIDO CONTRA EL PROCESO
+    ══════════════════════════════════════════════════════════════════════════
+
+    Nada de esto nace de una necesidad nueva. Son tres divergencias entre lo
+    que el contrato dice y lo que el proceso hace, encontradas por el test
+    que compara los dos documentos. Se resuelven acá porque el contrato es
+    donde se decide de qué lado va la corrección.
+
+    ★ 1. `GET /admin/sap-status` — SE DECLARA, Y PASA A SER SOLO DE ADMIN
+      Existía desde el 15 de julio, servido y sin declarar: superficie que
+      nadie gobernaba. La regla no admite término medio — si algún cliente
+      lo llama, va al contrato; si no lo llama nadie, sale del proceso.
+
+      Se declara porque el dato es el que hace falta cuando algo va mal:
+      qué fuente del espejo se refrescó, cuándo tuvo su último éxito, con
+      qué error falló, y si lleva demasiado sin actualizarse. Eso hoy sólo
+      se puede saber entrando a la base.
+
+      ⚠️ CAMBIA LA AUTORIZACIÓN: hasta ahora lo leía cualquier usuario
+      autenticado. `last_error` es texto de error crudo de SAP —nombres de
+      objetos, detalles de conexión, a veces datos— y no hay ninguna razón
+      para que un vendedor con el teléfono en la calle pueda leerlo. Queda
+      restringido a ADMIN, igual que su hermano
+      `POST /admin/sap-refresh/trigger`, que siempre lo estuvo.
+
+      Este es el único cambio del bloque que PUEDE ROMPER a alguien: si
+      alguna de las tres apps lo llamara, empezaría a recibir 403. Hay que
+      verificarlo en los repos de iOS ANTES de aplicar la restricción — no
+      después.
+
+    ★ 2. `not_delivered_orders[].reason` PASA A LLAMARSE `order_reason`
+      El contrato decía `reason` y el proceso sirve `order_reason`. Gana el
+      proceso, por dos razones que apuntan al mismo lado:
+
+        · `order_reason` es como se llama ese mismo campo en
+          `DeliveryRecord` y en `POST /dispatch/orders/{uuid}/deliver`. Un
+          motivo a nivel pedido se llama igual en todo el contrato o no se
+          entiende en ninguno.
+        · Quien lo lea hoy está leyendo `order_reason`, porque es lo que
+          llega. Renombrar del otro lado rompería a un cliente que hoy
+          funciona, para cumplir una promesa que nunca se cumplió.
+
+      No es una laxitud: es la misma regla de v0.45.3 —cuando el código
+      hace lo correcto y el contrato dice otra cosa, se corrige el
+      contrato— y no vale como precedente para dejar pasar una divergencia
+      donde el código esté mal.
+
+    ★ 3. LO QUE EL BARRIDO ENCONTRÓ Y NO SE ARREGLA ACÁ
+      `OrderSummary` declara `decided_at`, `decided_by` y `decision_note`
+      —17 operaciones— y el proceso no los sirve. Ahí el contrato tiene
+      razón y el que falta es el código: quién aprobó o rechazó un pedido y
+      cuándo es dato real, ya guardado, y el Dashboard no lo puede mostrar
+      porque nunca llega. Se implementa del lado del middleware; el
+      contrato no cambia.
+
+    ★ LO QUE ESTE BLOQUE DEMUESTRA, Y ES LO QUE MÁS IMPORTA
+      La capa que compara los NOMBRES DE PROPIEDADES encontró, en su
+      primera corrida, que `pickup_count` —declarado en `TruckSummary` y en
+      `RouteStop` por v0.45.0— no estaba implementado en ninguno de los
+      dos. Cuarta vez de la misma clase: el contrato promete un campo, el
+      DTO no lo tiene, y todo compila y todo pasa.
+
+      Las tres anteriores (`sap_reference`, `line_id`, `salesperson_code`)
+      se encontraron por casualidad, semanas después. Ésta se encontró
+      dentro del mismo bloque que la introdujo.
+
+    ⚠️ Y LO QUE EL BARRIDO NO PUEDE HACER
+      Las cuatro capas comparan QUÉ EXISTE, no QUÉ SIGNIFICA. Ninguna
+      habría encontrado el 404 de v0.45.3, donde los dos documentos
+      declaraban códigos parecidos y diferían en cuándo se devuelve cada
+      uno. Verde en el barrido NUNCA significa "el contrato describe lo que
+      la API hace".
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.45.3 — EL CONTRATO SE ALINEA AL CÓDIGO EN `/route`
@@ -3314,6 +3388,41 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/SapRefreshResult' }
+
+  /admin/sap-status:
+    get:
+      tags: [sap-refresh]
+      summary: Estado del espejo SAP — qué se refrescó, cuándo, y qué falló
+      description: >
+        ★ DECLARADO en v0.46.0. REQUIERE rol ADMIN.
+
+        No es nuevo: existe en el proceso desde julio de 2026, servido y sin
+        declarar. Lo encontró el test que compara el OpenAPI servido contra
+        este archivo. Se declara porque un endpoint servido y no declarado
+        es superficie que nadie gobierna.
+
+        Puramente lectura, sin efectos. Es el diagnóstico del espejo: por
+        cada fuente, cuándo se intentó refrescar, cuándo fue la última vez
+        que salió bien, con qué error falló, cuántas filas tiene y si lleva
+        demasiado tiempo sin actualizarse.
+
+        PARA QUÉ SIRVE: hoy la única forma de saber si el espejo está al día
+        es entrar a la base. Con esto, cuando algo se ve raro —stock que no
+        cuadra, un cliente que no aparece— se puede saber en un click si el
+        espejo se refrescó o si lleva horas fallando.
+
+        ⚠️ v0.46.0 CAMBIA LA AUTORIZACIÓN: hasta ahora lo leía cualquier
+        usuario autenticado. `last_error` es texto crudo de error de SAP y
+        no hay razón para que un vendedor en la calle lo lea. Queda en
+        ADMIN, igual que `POST /admin/sap-refresh/trigger`.
+      responses:
+        '200':
+          description: Estado de cada fuente del espejo
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SapStatus' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /sync/catalog:
     get:
@@ -11100,7 +11209,17 @@ components:
             properties:
               order_number: { type: string }
               client_name: { type: string }
-              reason: { $ref: '#/components/schemas/OrderRejectionReason' }
+              order_reason:
+                allOf:
+                  - $ref: '#/components/schemas/OrderRejectionReason'
+                description: >
+                  ★ v0.46.0 — SE LLAMABA `reason` en este contrato y
+                  `order_reason` en el proceso. Gana el proceso: así se llama
+                  el mismo campo en `DeliveryRecord` y en
+                  `POST /dispatch/orders/{uuid}/deliver`, y es lo que hoy
+                  reciben los clientes. Renombrar del otro lado rompería a
+                  quien funciona para cumplir una promesa que nunca se
+                  cumplió.
         stops:
           type: array
           description: Las paradas en orden de entrega DIRECTO (como el manifiesto).
@@ -11869,6 +11988,67 @@ components:
     PriceListNumber:
       type: integer
       enum: [1, 2, 3]
+
+    SapStatus:
+      type: object
+      description: >
+        ★ DECLARADO en v0.46.0. El estado del espejo SAP, fuente por fuente.
+        Diagnóstico de solo lectura — no dispara ningún refresco.
+      properties:
+        checked_at:
+          type: string
+          format: date-time
+          description: Cuándo se leyó este estado.
+        refresh_interval_minutes:
+          type: integer
+          description: >
+            Cada cuánto corre el refresco automático. Va acá para que
+            `is_stale` se pueda interpretar sin conocer la configuración.
+        sources:
+          type: array
+          items: { $ref: '#/components/schemas/SapStatusSource' }
+
+    SapStatusSource:
+      type: object
+      description: ★ DECLARADO en v0.46.0. Una fuente del espejo SAP.
+      properties:
+        source_name: { type: string, description: "ej. vw_WMS_Stock" }
+        last_attempt_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            Último INTENTO, haya salido bien o mal. NULL si nunca se intentó
+            — que no es lo mismo que "falló".
+        last_success_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            Último éxito. La distancia entre este campo y `last_attempt_at`
+            es el dato que importa: iguales = está al día; muy separados =
+            viene fallando hace rato con la última copia buena servida como
+            si fuera actual.
+        last_attempt_succeeded:
+          type: boolean
+          description: Si el último intento salió bien.
+        last_error:
+          type: string
+          nullable: true
+          description: >
+            ⚠️ Texto CRUDO del error de SAP — nombres de objetos, detalles de
+            conexión, a veces datos. Por esto el endpoint es solo de ADMIN.
+            No mostrarlo fuera de una pantalla de administración ni mandarlo
+            a ningún log que salga del servidor.
+        row_count:
+          type: integer
+          description: Filas que tiene hoy esa fuente en el espejo.
+        is_stale:
+          type: boolean
+          description: >
+            Lleva más de 2× `refresh_interval_minutes` sin un éxito. Viaja
+            RESUELTO por el servidor, no como regla a recalcular — mismo
+            criterio que `out_of_stock` desde v0.40.0.
 
     LoginRequest:
       type: object
