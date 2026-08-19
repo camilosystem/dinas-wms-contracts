@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.52.0
+  version: 0.52.1
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -106,6 +106,33 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.52.1 — DESCARTAR UN DEPÓSITO CREADO POR ERROR
+    ══════════════════════════════════════════════════════════════════════════
+
+    v0.52.0 escribió la garantía de que el número de un depósito descartado
+    NO se libera, y no definió ninguna puerta para descartarlo. Una garantía
+    sobre un acto que no existe.
+
+    ★ `DELETE /deposits/{deposit_uuid}` — solo VACÍO y ABIERTO
+      Mismo criterio que retirar un pallet (v0.51.0), y por la misma razón:
+      borrar un documento con contenido hace dos cosas y muestra una. El
+      vendedor ve desaparecer el depósito y no ve que le volvieron seis
+      pagos a la lista de disponibles. Primero se quitan los pagos, después
+      se descarta el depósito.
+
+      Con pagos adentro → 409 `deposit_not_empty`, con cuántos tiene.
+
+    ★ EL NÚMERO SIGUE SIN LIBERARSE
+      Descartado el `6-0004`, el próximo es el `6-0005`. Ya estaba escrito
+      en v0.52.0; ahora hay un acto al que aplicarlo.
+
+    ★ POR QUÉ NO SE PUEDE DESCARTAR UNO CERRADO
+      Un depósito cerrado dice que ese dinero se entregó en un banco. Eso ya
+      pasó y no se borra: si estaba mal armado, se reabre —que deja rastro—
+      y se corrige. Borrarlo sería hacer desaparecer la constancia de una
+      entrega física.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.52.0 — DEPÓSITOS: VARIOS PAGOS QUE VAN JUNTOS AL BANCO
@@ -4673,6 +4700,43 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+    delete:
+      tags: [deposits]
+      summary: Descartar un depósito creado por error
+      description: >
+        ★ NUEVO en v0.52.1. REQUIERE que el depósito sea SUYO, esté ABIERTO
+        y esté VACÍO.
+
+        Con pagos adentro → 409 `deposit_not_empty`, diciendo cuántos tiene.
+        Primero se quitan los pagos, después se descarta. Borrar con
+        contenido haría dos cosas y mostraría una: el depósito desaparece y
+        el vendedor no ve que le volvieron seis pagos a la lista de
+        disponibles. Mismo criterio que retirar un pallet en v0.51.0.
+
+        Un depósito CERRADO no se descarta → 409: dice que ese dinero se
+        entregó en un banco, y eso ya pasó. Si estaba mal armado se reabre
+        —que deja rastro— y se corrige.
+
+        ★ EL NÚMERO NO SE LIBERA. Descartado el `6-0004`, el próximo es el
+        `6-0005`.
+      parameters:
+        - name: deposit_uuid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204':
+          description: Depósito descartado
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            `deposit_not_empty` (todavía tiene pagos, el cuerpo dice
+            cuántos) o el depósito ya está cerrado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
   /deposits/{deposit_uuid}/payments:
     post:
       tags: [deposits]
