@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.48.0
+  version: 0.49.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -51,6 +51,65 @@ info:
     calcule "hoy" con el reloj UTC —por ejemplo con `toISOString()`— manda
     el día equivocado durante esa franja y reproduce el problema desde su
     lado, aunque el servidor esté bien.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.49.0 — EN QUÉ PALLET QUEDÓ CADA ÍTEM
+    ══════════════════════════════════════════════════════════════════════════
+
+    ★ LO QUE YA ERA LEGAL Y NO HACE FALTA CAMBIAR
+      Un pedido repartido entre varios pallets ya está permitido desde
+      v0.10.0, y partir la cantidad de un mismo ítem entre dos pallets
+      también. `assign-to-pallet` recibe `(order_uuid, item_code, pallet_id,
+      quantity)` y es idempotente por esa tripleta: el mismo ítem del mismo
+      pedido puede estar en dos pallets con cantidades distintas.
+
+      Se dice explícito porque la necesidad —repartir por peso y tamaño, que
+      diez cajas pesadas no entran en un solo pallet— podría hacer pensar
+      que hay que abrir algo. No hay nada que abrir del lado del servidor.
+
+    ★ LO QUE FALTABA: EL INFORME NO DECÍA QUÉ ÍTEM QUEDÓ EN QUÉ PALLET
+      El bodeguero SÍ lo veía —`OrderDistributionProgress.items[].in_pallets`
+      lo trae desde v0.10.0— pero esa información moría al cerrar el carril.
+      El manifiesto, la app del driver y el detalle del pedido solo tenían
+      `pallet_labels`: la lista de pallets del pedido, sin decir qué hay en
+      cada uno.
+
+      Con un pedido en un solo pallet eso alcanzaba. Con un pedido repartido
+      en cuatro, "está en estos cuatro pallets" no le sirve a nadie: el
+      driver los abre todos para encontrar dos cajas, y la oficina no puede
+      responder dónde viajó un ítem cuando el cliente reclama.
+
+    ★ QUÉ SE AGREGA — `PalletPlacement`, EL MISMO SCHEMA EN TRES LUGARES
+      · Manifiesto — `stops[].orders[].items[]`, con sus pallets.
+      · App del driver — `DriverOrder.lines[].pallets`.
+      · Detalle del pedido — `OrderDetailLine.pallets`.
+
+      Un solo schema y no tres formas parecidas, por la misma razón de
+      siempre: tres definiciones del mismo dato divergen el día que una
+      cambia, y nadie las compara.
+
+    ⚠️ NULL Y VACÍO NO SIGNIFICAN LO MISMO
+      · `pallets: null` — el pedido TODAVÍA NO SE REPARTIÓ. No hay dato,
+        no hay pallets, no hay nada que mostrar.
+      · `pallets: []` — se repartió y de este ítem NO viajó nada. Pasa
+        cuando hubo faltante y no se recogió ninguna unidad.
+
+      Son dos situaciones distintas para quien lee: una es "esperá", la
+      otra es "este ítem no va". Tratar las dos igual es exactamente el
+      error que este proyecto ya pagó varias veces con listas vacías.
+
+    ★ `pallet_labels` SE QUEDA
+      No se deprecia. Es el resumen que sirve para cargar y descargar el
+      camión de un vistazo, y el detalle por ítem no lo reemplaza: son dos
+      preguntas distintas —"¿qué pallets bajo en esta parada?" contra
+      "¿en cuál está esta caja?"—. Ahora es derivable del detalle, y el
+      servidor lo sigue calculando para que nadie tenga que derivarlo.
+
+    ★ LO QUE NO CAMBIA: CONGELADO Y SECO NO SE MEZCLAN
+      Un ítem congelado sigue exigiendo pallet FROZEN, y cada bodeguero
+      sigue trabajando su carril. La libertad de repartir por peso y tamaño
+      existe DENTRO de cada carril. La cadena de frío no es una preferencia
+      de organización.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.48.0 — EL CONTRATO ADMITE LOS NULOS QUE YA EXISTEN
@@ -11237,6 +11296,25 @@ components:
       enum: [FROZEN, REGULAR]
       description: FROZEN y REGULAR nunca se mezclan en un pallet.
 
+    PalletPlacement:
+      type: object
+      description: >
+        ★ NUEVO en v0.49.0. Cuánto de un ítem quedó en un pallet.
+
+        Un mismo ítem de un mismo pedido puede aparecer en varios: diez cajas
+        pesadas se reparten entre dos pallets a propósito, y eso es el uso
+        normal, no una excepción. La suma de las cantidades de un ítem sobre
+        todos sus `PalletPlacement` es lo que viaja de ese ítem.
+      properties:
+        pallet_id: { type: string, format: uuid }
+        pallet_label:
+          type: string
+          description: La etiqueta física del pallet (ej. "Queens-Regular-1").
+        quantity:
+          type: number
+          format: double
+          description: Cuántas unidades de este ítem quedaron en ESTE pallet.
+
     Pallet:
       type: object
       properties:
@@ -11409,6 +11487,39 @@ components:
                       description: >
                         Los pallets de este pedido (ej. ["Queens-Regular-1",
                         "Queens-Frozen-1"]). Un pedido con congelados tiene 2.
+
+                        ★ v0.49.0 — SIGUE SIENDO EL RESUMEN, y no se
+                        deprecia: es lo que se mira para saber qué bajar en
+                        esta parada. Para saber en cuál está una caja
+                        concreta, ver `items`.
+                    items:
+                      type: array
+                      description: >
+                        ★ NUEVO en v0.49.0. Los ítems del pedido con el pallet
+                        donde quedó cada uno.
+
+                        Existe porque un pedido puede estar repartido entre
+                        varios pallets —el bodeguero los separa por peso y
+                        tamaño— y "está en estos cuatro pallets" obliga a
+                        abrir los cuatro para encontrar dos cajas.
+                      items:
+                        type: object
+                        properties:
+                          item_code: { type: string }
+                          item_name: { type: string }
+                          quantity:
+                            type: number
+                            format: double
+                            description: Cuánto de este ítem lleva el camión para este pedido.
+                          pallets:
+                            type: array
+                            nullable: true
+                            items: { $ref: '#/components/schemas/PalletPlacement' }
+                            description: >
+                              ⚠️ NULL y VACÍO no son lo mismo. `null` = el
+                              pedido todavía no se repartió. `[]` = se
+                              repartió y de este ítem no viajó nada (hubo
+                              faltante y no se recogió ninguna unidad).
                     is_incomplete_delivery:
                       type: boolean
                       description: >
@@ -11892,6 +12003,21 @@ components:
                 type: number
                 format: double
                 description: Cuánto lleva el camión de este ítem para este pedido.
+              pallets:
+                type: array
+                nullable: true
+                items: { $ref: '#/components/schemas/PalletPlacement' }
+                description: >
+                  ★ NUEVO en v0.49.0. En qué pallet está cada parte de este
+                  ítem. Viaja en la descarga de la ruta, así que el driver lo
+                  tiene sin conexión.
+
+                  Sirve para lo más concreto del trabajo: encontrar la caja
+                  sin abrir los cuatro pallets del pedido.
+
+                  ⚠️ NULL y VACÍO no son lo mismo. `null` = el pedido todavía
+                  no se repartió. `[]` = se repartió y de este ítem no viajó
+                  nada. Una lista vacía NO se muestra como "sin datos".
 
     RouteSummary:
       type: object
@@ -13346,6 +13472,21 @@ components:
         item_code: { type: string }
         item_name: { type: string }
         quantity: { type: number, format: double }
+        pallets:
+          type: array
+          nullable: true
+          items: { $ref: '#/components/schemas/PalletPlacement' }
+          description: >
+            ★ NUEVO en v0.49.0. En qué pallet viajó cada parte de este ítem.
+
+            Está acá para que la oficina pueda responder dónde viajó una caja
+            cuando el cliente reclama, sin tener que reconstruirlo del
+            recuerdo de nadie. El bodeguero ya lo veía mientras repartía; al
+            cerrar el carril esa información se perdía.
+
+            ⚠️ NULL y VACÍO no son lo mismo. `null` = el pedido todavía no se
+            repartió —lo normal en un pedido recién aprobado—. `[]` = se
+            repartió y de este ítem no viajó nada, porque hubo faltante.
         unit_price: { type: number, format: double }
         price_list: { $ref: '#/components/schemas/PriceListNumber' }
         line_discount_pct:
