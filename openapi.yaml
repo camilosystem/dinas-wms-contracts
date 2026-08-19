@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.47.2
+  version: 0.48.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -51,6 +51,72 @@ info:
     calcule "hoy" con el reloj UTC —por ejemplo con `toISOString()`— manda
     el día equivocado durante esa franja y reproduce el problema desde su
     lado, aunque el servidor esté bien.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.48.0 — EL CONTRATO ADMITE LOS NULOS QUE YA EXISTEN
+    ══════════════════════════════════════════════════════════════════════════
+
+    Ningún endpoint nuevo y ningún campo nuevo: veintitantas propiedades que
+    el contrato declaraba obligatorias y que el proceso puede mandar en null.
+    Se corrige el contrato, porque en todos estos casos el null es legítimo y
+    significa algo.
+
+    ★ DE DÓNDE SALEN
+      De medir la nulabilidad entre el OpenAPI servido y este archivo: 103
+      ocurrencias sobre 2.959 propiedades en la dirección peligrosa —el
+      contrato promete un valor y el proceso puede mandar null—. Un cliente
+      que no espera null ahí se rompe con datos reales, no con datos raros.
+
+      ⚠️ Y ESTO EL BARRIDO NO LO VEÍA. Las cuatro capas comparan NOMBRES de
+      propiedades: el campo está en los dos documentos y la capa queda
+      verde mientras uno dice "siempre viene" y el otro manda null. Es la
+      segunda ceguera de la misma familia —la primera fue el 404 de
+      `/route`, que era "cuándo se devuelve cada código"—. Verde en el
+      barrido sigue sin significar que el contrato describa a la API.
+
+    ★ UN NULL NO ES UN CERO NI UN VACÍO — QUÉ SIGNIFICA CADA UNO
+      Se escriben uno por uno porque la diferencia importa:
+
+        · `taken_at` null — no se sabe cuándo se tomó el pedido en la calle.
+          NO se rellena con `received_at`: eso inventaría un dato de calle
+          que nadie registró. Ningún cálculo ni pantalla debe sustituir uno
+          por el otro.
+        · `row_count` / `rows_upserted` null — esa fuente NUNCA se refrescó.
+          Distinto de 0, que es "se refrescó y no trajo filas". La
+          diferencia es justamente lo que se va a mirar cuando algo falle.
+        · `shipping_route` null en un cliente — no tiene zona asignada. Es
+          un hueco de datos maestros real (cinco clientes hoy) y la pantalla
+          debe decirlo, no dejar la celda en blanco.
+        · `manager_name` null — 99,5% de los clientes. La ausencia es la
+          norma, no la excepción.
+        · `line_discount_pct` null — no se informó descuento en esa línea.
+          A efectos de cálculo es "sin descuento", pero NO es lo mismo que
+          un 0 explícito: uno es silencio y el otro es una decisión.
+        · `transfer_bank_account` null — el pago no fue por transferencia.
+
+    ★ POR QUÉ EL CONTRATO Y NO EL CÓDIGO, EN LOS 25 CASOS
+      Porque en ninguno el null es un hueco que alguien deba llenar: son
+      datos opcionales por naturaleza, o ausencias con significado. La
+      medición buscó específicamente la otra cubeta —el dato que debería
+      existir siempre y un camino no llena— y no encontró ninguno.
+
+    ★ `taken_at`: LA ASIMETRÍA QUE LO DECIDE
+      No está en `required` de `OrderCreate` y nunca lo estuvo, así que un
+      cliente puede omitirlo legítimamente. Hacerlo obligatorio ahora
+      rompería a cualquiera que hoy lo omite, para ganar un dato que de
+      todos modos no se puede reconstruir hacia atrás. Y rellenarlo con
+      `received_at` sería peor: convertiría "no sé" en una afirmación falsa
+      sobre la calle.
+
+    ★ LA REGLA GENERAL, PARA NO VOLVER A DISCUTIR CASO POR CASO
+      Ante la duda de si un campo puede ser null, se declara NULLABLE.
+
+      El error no es simétrico: declarar nullable algo que nunca es null no
+      rompe a nadie —el cliente escribe una rama que no se ejecuta—;
+      declarar obligatorio algo que puede faltar rompe en producción con un
+      dato real. Por eso `category`, que hoy no tiene un solo null en 539
+      ítems pero viene de SAP y podría no venir, se declara nullable
+      igual.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.47.2 — `price_source` PUEDE SER NULL, Y UN PRECIO 0 ES AUSENCIA
@@ -9250,7 +9316,12 @@ components:
             type: object
             properties:
               source: { type: string, description: "ej. vw_WMS_Stock" }
-              rows_upserted: { type: integer }
+              rows_upserted:
+                type: integer
+                nullable: true
+                description: >
+                  ★ v0.48.0 — NULLABLE, y null NO es 0: la fuente no llegó a
+                  procesarse. Cero es "se procesó y no hubo filas".
               succeeded: { type: boolean }
               error_detail: { type: string, nullable: true }
 
@@ -9360,8 +9431,10 @@ components:
               $ref: '#/components/schemas/PaymentChannel'
               description: "★ v0.19.1. Crudo, solo para auditoría/Remarks — el sincronizador usa resolved_account_code, no esto."
             transfer_bank_account:
-              $ref: '#/components/schemas/TransferBankAccount'
-              description: "★ v0.19.1. Crudo, solo para auditoría/Remarks — el sincronizador usa resolved_account_code, no esto."
+              allOf:
+                - $ref: '#/components/schemas/TransferBankAccount'
+              nullable: true
+              description: "★ v0.19.1. Crudo, solo para auditoría/Remarks — el sincronizador usa resolved_account_code, no esto. ★ v0.48.0 nullable."
             resolved_account_code:
               type: string
               nullable: true
@@ -10104,10 +10177,15 @@ components:
             por rol del caller (ver ahí el detalle completo). Null si
             method ∈ {TRANSFERENCIA, OTRO}.
         transfer_bank_account:
-          $ref: '#/components/schemas/TransferBankAccount'
+          allOf:
+            - $ref: '#/components/schemas/TransferBankAccount'
+          nullable: true
           description: >
             ★ v0.19.1. OBLIGATORIO si method = TRANSFERENCIA (cualquier
             caller, vendedor o admin). Null para cualquier otro method.
+
+            ★ v0.48.0 — declarado nullable de verdad: antes el `$ref` con
+            hermanos dejaba la nulabilidad sin expresar.
         check_number:
           type: string
           nullable: true
@@ -10153,7 +10231,11 @@ components:
         amount: { type: number, format: double }
         method: { $ref: '#/components/schemas/AccountPaymentMethod' }
         payment_channel: { $ref: '#/components/schemas/PaymentChannel' }
-        transfer_bank_account: { $ref: '#/components/schemas/TransferBankAccount' }
+        transfer_bank_account:
+          allOf:
+            - $ref: '#/components/schemas/TransferBankAccount'
+          nullable: true
+          description: ★ v0.48.0 — NULL cuando el pago no fue por transferencia.
         check_number: { type: string, nullable: true }
         bank_code: { type: string, nullable: true }
         payment_date: { type: string, format: date }
@@ -12339,7 +12421,14 @@ components:
             a ningún log que salga del servidor.
         row_count:
           type: integer
-          description: Filas que tiene hoy esa fuente en el espejo.
+          nullable: true
+          description: >
+            Filas que tiene hoy esa fuente en el espejo.
+
+            ★ v0.48.0 — NULLABLE, y null NO es 0: significa que esa fuente
+            NUNCA se refrescó. Cero significa que se refrescó y no trajo
+            ninguna fila. La diferencia entre esas dos cosas es exactamente
+            lo que se va a mirar cuando algo falle.
         is_stale:
           type: boolean
           description: >
@@ -12369,8 +12458,18 @@ components:
       properties:
         item_code: { type: string }
         name: { type: string }
-        category: { type: string }
-        barcode: { type: string }
+        category:
+          type: string
+          nullable: true
+          description: >
+            ★ v0.48.0 — NULLABLE. Hoy no hay un solo ítem sin categoría, pero
+            viene de SAP y puede faltar. Se declara nullable porque el error
+            no es simétrico: prever un null que no ocurre no rompe nada;
+            no preverlo rompe en producción.
+        barcode:
+          type: string
+          nullable: true
+          description: ★ v0.48.0 — NULLABLE. 30% de los ítems no tienen código de barras.
         price_list_1: { type: number, format: double }
         price_list_2: { type: number, format: double }
         price_list_3: { type: number, format: double }
@@ -12432,13 +12531,26 @@ components:
       properties:
         client_code: { type: string }
         name: { type: string }
-        address: { type: string }
-        city: { type: string }
-        zipcode: { type: string }
-        manager_name: { type: string }
+        address: { type: string, nullable: true }
+        city: { type: string, nullable: true }
+        zipcode: { type: string, nullable: true }
+        manager_name:
+          type: string
+          nullable: true
+          description: >
+            ★ v0.48.0 — NULLABLE, y la ausencia es la NORMA: 99,5% de los
+            clientes no lo tienen.
         shipping_route:
           type: string
-          description: Código de ruta/día de entrega (de OCRD.U_RSAP_ROUTE).
+          nullable: true
+          description: >
+            Código de ruta/día de entrega (de OCRD.U_RSAP_ROUTE).
+
+            ★ v0.48.0 — NULLABLE. Null significa que el cliente NO TIENE
+            zona asignada — un hueco real de datos maestros, no un dato que
+            no se pudo leer. La pantalla debe decirlo con esas palabras, no
+            dejar la celda en blanco: una celda vacía se lee como un
+            problema de la pantalla.
         default_price_list: { $ref: '#/components/schemas/PriceListNumber' }
         authorized_price_lists:
           type: array
@@ -12597,8 +12709,16 @@ components:
             El pedido queda atribuido a este vendedor para todo efecto
             (comisiones, filtros, asignación de clientes). Quién lo creó
             realmente se registra aparte en created_by.
-        taken_at: { type: string, format: date-time }
-        notes: { type: string }
+        taken_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            ★ v0.48.0 — NULLABLE y NO obligatorio, como siempre lo fue: no
+            está en `required`. Es cuándo el vendedor tomó el pedido EN LA
+            CALLE, que puede diferir de cuándo llegó al servidor por el
+            trabajo sin conexión.
+        notes: { type: string, nullable: true }
         invoice_discount_pct:
           type: number
           format: double
@@ -12673,6 +12793,7 @@ components:
         line_discount_pct:
           type: number
           format: double
+          nullable: true
           minimum: 0
           maximum: 100
           description: >
@@ -13004,7 +13125,18 @@ components:
         salesperson_code: { type: string }
         client_code: { type: string }
         client_name: { type: string }
-        taken_at: { type: string, format: date-time }
+        taken_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            ★ v0.48.0 — NULLABLE. Cuándo el vendedor tomó el pedido en la
+            calle. Null = no se informó; el cliente puede omitirlo al crear.
+
+            ⚠️ NO SE SUSTITUYE POR `received_at`. Rellenarlo con la hora de
+            llegada al servidor convertiría un "no sé" en una afirmación
+            falsa sobre la calle. Lo que ordena las grillas es
+            `received_at`, que nunca es null.
         received_at: { type: string, format: date-time }
         line_count: { type: integer }
         total_amount:
@@ -13087,7 +13219,7 @@ components:
           allOf:
             - $ref: '#/components/schemas/HoldReason'
           nullable: true
-        notes: { type: string }
+        notes: { type: string, nullable: true }
         created_by:
           type: string
           nullable: true
@@ -13216,7 +13348,15 @@ components:
         quantity: { type: number, format: double }
         unit_price: { type: number, format: double }
         price_list: { $ref: '#/components/schemas/PriceListNumber' }
-        line_discount_pct: { type: number, format: double }
+        line_discount_pct:
+          type: number
+          format: double
+          nullable: true
+          description: >
+            ★ v0.48.0 — NULLABLE. Null = no se informó descuento en esa
+            línea. Para el cálculo equivale a "sin descuento", pero NO es lo
+            mismo que un 0 explícito: uno es silencio y el otro una
+            decisión.
         line_total:
           type: number
           format: double
@@ -13252,8 +13392,8 @@ components:
       properties:
         item_code: { type: string }
         name: { type: string }
-        category: { type: string }
-        barcode: { type: string }
+        category: { type: string, nullable: true }
+        barcode: { type: string, nullable: true }
         price_list_1: { type: number, format: double }
         price_list_2: { type: number, format: double }
         price_list_3: { type: number, format: double }
@@ -13365,13 +13505,17 @@ components:
       properties:
         client_code: { type: string }
         name: { type: string }
-        address: { type: string }
-        city: { type: string }
-        zipcode: { type: string }
-        manager_name: { type: string }
+        address: { type: string, nullable: true }
+        city: { type: string, nullable: true }
+        zipcode: { type: string, nullable: true }
+        manager_name: { type: string, nullable: true }
         shipping_route:
           type: string
+          nullable: true
           description: >
+            ★ v0.48.0 — NULLABLE: null = el cliente NO TIENE zona
+            asignada. Es un hueco real de datos maestros, no un dato ilegible.
+
             ★ CORREGIDO EN v0.42.1 — LA ZONA DE VISITA DEL VENDEDOR (de
             `OCRD.U_RSAP_ROUTE`). Es la clasificación COMERCIAL que se les da
             a los vendedores: a qué zona vende y visita cada uno. Catorce
