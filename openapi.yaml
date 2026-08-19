@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.49.0
+  version: 0.50.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -51,6 +51,173 @@ info:
     calcule "hoy" con el reloj UTC —por ejemplo con `toISOString()`— manda
     el día equivocado durante esa franja y reproduce el problema desde su
     lado, aunque el servidor esté bien.
+
+    ══════════════════════════════════════════════════════════════════════════
+    👤 REGLA GLOBAL — UN VENDEDOR NO NECESITA CUENTA PARA SER DUEÑO DE ALGO
+    ══════════════════════════════════════════════════════════════════════════
+
+    ★ v0.50.0. Vale para TODA la superficie, no solo para lo que la menciona.
+
+    **Un `salesperson_code` es un hecho de SAP. Una cuenta de login es un
+    hecho del WMS.** Son dos cosas distintas y NADA que atribuya un
+    documento a un vendedor puede exigir la segunda.
+
+    Un pedido, un pago o una solicitud de crédito pertenecen al vendedor que
+    los tomó, tenga o no usuario para entrar al WMS. La cuenta sirve para
+    trabajar dentro del sistema; la pertenencia es del negocio y existe
+    antes.
+
+    ★ EN CONCRETO
+      · Validar que un `salesperson_code` existe se hace contra el ESPEJO DE
+        SAP (`SapSalespersons`), y se acepta si está activo.
+      · Poblar un selector de "a qué vendedor pertenece esto" se hace con la
+        misma fuente.
+      · La tabla de cuentas de login solo se consulta para responder quién
+        puede ENTRAR al sistema, o para mostrar a quién falta aprovisionar
+        (`GET /admin/sap-salespersons`, campo `has_login_account`).
+
+    ★ POR QUÉ ESTÁ ESCRITO ACÁ Y NO EN CADA ENDPOINT
+      Porque el error se repitió CINCO veces antes de que alguien lo tratara
+      como una regla y no como cinco bugs:
+
+        · v0.21.1 — `GET /admin/salespersons` no mostraba los vendedores
+          reales de SAP, solo las cuentas creadas. La pantalla de gestionar
+          usuarios no podía decir quién faltaba.
+        · v0.29.0 — el mismo endpoint filtraba por `Role=VENDEDOR`, dejando
+          fuera al VENDEDOR_INSTITUCIONAL. Role es autorización del WMS; SAP
+          no tiene ningún concepto de rol.
+        · v0.33.2 — `salesperson_code` en las solicitudes de crédito salía
+          del TOKEN de quien cargaba, no del cliente. Producía atribución
+          cruzada real.
+        · La validación de clientes ya lo había resuelto bien, en otro
+          archivo, con el motivo escrito al lado: *"la mayoría de los
+          vendedores de SAP nunca tendrá cuenta aquí; rechazar a sus
+          clientes por eso era un falso negativo, no una validación"*.
+        · v0.50.0 — la creación de pedidos validaba contra la tabla de
+          login. **1.800 clientes de 2.638 quedaban bloqueados**: 16 de los
+          19 vendedores activos de SAP no tienen usuario, y a sus clientes
+          no se les podía cargar un pedido.
+
+      La quinta no fue un descubrimiento nuevo: fue no haber aplicado a dos
+      carpetas de distancia lo que el propio código ya había aprendido.
+
+    ★ CÓMO SE VERIFICA QUE NO VUELVA
+      Cualquier validación de pertenencia que consulte la tabla de cuentas
+      de login está mal por definición, aunque hoy pase los tests: los datos
+      de prueba suelen tener cuenta para los tres o cuatro vendedores que se
+      usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.50.0 — LA PERTENENCIA SE VALIDA CONTRA SAP, NO CONTRA EL LOGIN
+    ══════════════════════════════════════════════════════════════════════════
+
+    ★ EL DAÑO, MEDIDO
+      Crear un pedido desde el Dashboard fallaba con
+      `salesperson_code_not_found` para el 68% de la cartera. La causa: la
+      validación corría contra la tabla de cuentas de login, y 16 de los 19
+      vendedores activos de SAP no tienen usuario del WMS.
+
+        · 19 vendedores activos en SAP — 3 con cuenta de login.
+        · 2.638 clientes — 1.800 sin poder recibir un pedido nuevo.
+
+      No era un caso raro: era la mayoría. Y el error decía "no corresponde
+      a ninguna cuenta de vendedor", que es cierto y sin embargo manda a
+      buscar el problema al lugar equivocado — parece un código mal escrito
+      cuando en realidad el código era correcto y la pregunta estaba mal
+      hecha.
+
+    ★ QUÉ CAMBIA
+      1. `OrderCreate.salesperson_code` se valida contra el ESPEJO DE SAP y
+         se acepta si el vendedor está ACTIVO. Ya no se exige cuenta de
+         login. 400 `salesperson_code_not_found` queda solo para un código
+         que no existe en SAP o está inactivo.
+
+      2. `GET /admin/salespersons` cambia de fuente: devuelve los vendedores
+         ACTIVOS del espejo de SAP, no las cuentas de login. Su propósito
+         siempre fue poblar selectores de PERTENENCIA —"a qué vendedor
+         pertenece este pago", "de qué vendedor es este pedido"— y para eso
+         la verdad es SAP. Hoy devolvía 3 de 19.
+
+      3. Se escribe la regla global 👤 arriba de este changelog, porque es
+         la quinta vez.
+
+    ★ LOS DOS ENDPOINTS DE VENDEDORES AHORA SE DISTINGUEN POR PROPÓSITO
+      Se parecen y no son lo mismo:
+
+        · `GET /admin/salespersons` — a quién puede PERTENECER un documento.
+          Vendedores activos de SAP. Es la fuente de todo selector de
+          atribución.
+        · `GET /admin/sap-salespersons` — a quién FALTA aprovisionar. Los
+          mismos, más `is_active` y `has_login_account`. Es la pantalla de
+          administración de usuarios.
+
+      Uno responde una pregunta de negocio y el otro una de administración.
+      Antes el primero respondía la segunda a medias, y por eso fallaba.
+
+    ⚠️ EL CONTRATO TAMBIÉN ESTABA MAL, NO SOLO EL CÓDIGO
+      `OrderCreate.salesperson_code` decía textualmente que el código "debe
+      corresponder a una cuenta con código de vendedor" y mandaba a usar
+      `GET /admin/salespersons` para el selector. El middleware implementó
+      exactamente lo que estaba escrito. La corrección empieza acá.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.49.1 — SE CIERRAN LAS ÚLTIMAS DIVERGENCIAS DE NULABILIDAD
+    ══════════════════════════════════════════════════════════════════════════
+
+    Solo TEXTO y nulabilidad. Cierra lo que quedó abierto de v0.48.0 para
+    que la guarda que compara los dos documentos pueda arrancar en verde.
+
+    ★ SEIS OCURRENCIAS QUE PASAN A NULLABLE
+      · `payment_channel` (tres vistas) — null cuando el método no es
+        EFECTIVO ni CHEQUE. Ya lo decía la descripción; ahora lo dice el
+        schema.
+      · `AdminClient.name` — la columna admite null aunque hoy no haya
+        ninguno en 2.638 clientes. Se declara nullable por la regla de
+        v0.48.0: cero nulos hoy no es imposibilidad, y equivocarse en este
+        sentido no rompe a nadie.
+      · `ShippingCodeConfig.name` y el `shipping_code_name` de
+        `/admin/trucks/available-orders` — hay 16 clientes cuyo código no
+        tiene nombre en la UDT.
+
+    ★ `InvoiceApplication.amount` PASA A NULLABLE, Y ES UNA DECISIÓN, NO UN
+      AJUSTE
+      Hoy el monto confirmado se resuelve con `?? 0` antes de salir. El 0 no
+      miente sobre el efecto —un pago rechazado o pendiente no aplicó nada—
+      pero borra una distinción que sí importa al conciliar:
+
+        · `0` — el aprobador MIRÓ esta factura y decidió no aplicarle nada.
+        · `null` — todavía no se confirmó. Nadie decidió nada.
+
+      Un cero es una decisión documentada; un null es su ausencia. Colapsar
+      las dos hace que una imputación jamás revisada se lea como una
+      revisada y descartada, y eso es precisamente lo que alguien intenta
+      reconstruir cuando un pago no cuadra.
+
+      Es además el mismo patrón `?? 0` del bug del precio de v0.33.3: una
+      ausencia convertida en un número que se lee como una afirmación. Se
+      corta acá por la misma razón, aunque hoy no esté causando daño.
+
+      Sigue siendo UN solo schema para propuestas y confirmadas: en las
+      propuestas el monto nunca es null, y declarar nullable algo que nunca
+      lo es no rompe a nadie.
+
+    ★ LA REGLA PARA LA GUARDA DE NULABILIDAD (capa 5)
+      Las dos direcciones NO son simétricas y la guarda no debe tratarlas
+      igual:
+
+        · El proceso puede mandar null donde el contrato promete un valor
+          → FALLA. Rompe a un cliente con datos reales.
+        · El contrato admite null donde el proceso siempre manda un valor
+          → SE INFORMA, NO FALLA.
+
+      La segunda es la dirección segura, y v0.48.0 la volvió norma: "ante la
+      duda, nullable". Una guarda que falle ahí estaría castigando
+      exactamente la elección que el contrato ordena hacer, y empujaría a
+      declarar obligatorio para poner el test en verde — que es el error
+      caro.
+
+      Se informa igual, porque un campo que nunca es null puede ser señal de
+      otra cosa. Pero se lee, no se obedece.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.49.0 — EN QUÉ PALLET QUEDÓ CADA ÍTEM
@@ -6812,7 +6979,12 @@ paths:
                       type: object
                       properties:
                         shipping_code: { type: integer }
-                        shipping_code_name: { type: string }
+                        shipping_code_name:
+                          type: string
+                          nullable: true
+                          description: >
+                            ★ v0.49.1 — NULLABLE. Hay códigos en uso que no
+                            tienen nombre en la UDT.
                         delivery_days:
                           type: array
                           items: { $ref: '#/components/schemas/WeekDay' }
@@ -8317,17 +8489,30 @@ paths:
       tags: [dispatch-admin]
       summary: Lista de vendedores (para atribuir un pago reportado desde el Dashboard)
       description: >
-        ★ v0.19.2 — REQUIERE ADMIN. Para el selector obligatorio de
-        salesperson_code en la pantalla "Reportar Pago" del Dashboard.
-        Mismo patrón que /admin/drivers.
+        ★ v0.19.2 — REQUIERE ADMIN. Es la fuente de TODO selector de
+        PERTENENCIA: a qué vendedor pertenece un pago, de qué vendedor es un
+        pedido. Mismo patrón que /admin/drivers.
 
-        ★ v0.29.0 — el criterio es TENER salesperson_code, no el rol de
-        login. Antes filtraba por Role=VENDEDOR, lo que dejaba fuera al
-        VENDEDOR_INSTITUCIONAL sin razón de negocio: Role es la capa de
-        autorización del WMS y SAP no tiene ningún concepto de rol (el
-        espejo SapSalespersons solo trae salesperson_code, name, is_active).
-        Las cuentas sin código (ADMIN, BODEGUERO, DRIVER, APROBADOR_*,
-        ANALISTA_COMERCIAL) siguen fuera, pero por no tener código.
+        ★ CORREGIDO EN v0.50.0 — CAMBIA DE FUENTE. Devuelve los vendedores
+        ACTIVOS del ESPEJO DE SAP (`SapSalespersons`), no las cuentas de
+        login del WMS.
+
+        Devolvía 3 de 19: solo los aprovisionados. Un selector de "a quién
+        pertenece esto" que ofrece el 16% de los vendedores reales no está
+        incompleto, está roto — y el pedido que se intenta atribuir a los
+        otros 16 se rechaza. Ver la regla global 👤: la pertenencia es un
+        hecho de SAP y la cuenta de login es un hecho del WMS.
+
+        ⚠️ NO CONFUNDIR CON `GET /admin/sap-salespersons`, que devuelve los
+        mismos vendedores pero para otra pregunta: a quién FALTA
+        aprovisionar (trae `is_active` y `has_login_account`). Uno es de
+        negocio, el otro de administración de usuarios.
+
+        ★ v0.29.0 — el criterio nunca fue el rol de login. Antes filtraba por
+        Role=VENDEDOR, lo que dejaba fuera al VENDEDOR_INSTITUCIONAL sin
+        razón de negocio: Role es la capa de autorización del WMS y SAP no
+        tiene ningún concepto de rol. Aquella corrección iba en la dirección
+        correcta y se quedó corta: cambió el filtro, no la tabla.
       responses:
         '200':
           description: Lista de vendedores
@@ -9487,8 +9672,10 @@ components:
             amount: { type: number, format: double }
             method: { $ref: '#/components/schemas/AccountPaymentMethod' }
             payment_channel:
-              $ref: '#/components/schemas/PaymentChannel'
-              description: "★ v0.19.1. Crudo, solo para auditoría/Remarks — el sincronizador usa resolved_account_code, no esto."
+              allOf:
+                - $ref: '#/components/schemas/PaymentChannel'
+              nullable: true
+              description: "★ v0.19.1. Crudo, solo para auditoría/Remarks — el sincronizador usa resolved_account_code, no esto. ★ v0.49.1 nullable."
             transfer_bank_account:
               allOf:
                 - $ref: '#/components/schemas/TransferBankAccount'
@@ -10204,11 +10391,35 @@ components:
 
     InvoiceApplication:
       type: object
-      description: Cuánto de un pago de cartera se aplica a UNA factura.
+      description: >
+        Cuánto de un pago de cartera se aplica a UNA factura.
+
+        Un solo schema para las PROPUESTAS y las CONFIRMADAS. En las
+        propuestas `amount` nunca es null; en las confirmadas puede serlo
+        (ver el campo).
       required: [invoice_doc_num, amount]
       properties:
         invoice_doc_num: { type: string, description: "DocNum de la factura (de vw_CxC)." }
-        amount: { type: number, format: double }
+        amount:
+          type: number
+          format: double
+          nullable: true
+          description: >
+            ★ v0.49.1 — NULLABLE en las imputaciones CONFIRMADAS, y la
+            diferencia con 0 es la que importa al conciliar:
+
+              · `0`    — el aprobador MIRÓ esta factura y decidió no
+                         aplicarle nada. Es una decisión documentada.
+              · `null` — todavía no se confirmó. Nadie decidió nada.
+
+            Antes las confirmadas salían con `?? 0`, así que una imputación
+            jamás revisada se leía igual que una revisada y descartada —
+            exactamente lo que alguien intenta reconstruir cuando un pago no
+            cuadra. Es el mismo patrón que el bug del precio: una ausencia
+            convertida en un número que se lee como afirmación.
+
+            En las PROPUESTAS nunca es null. Declararlo nullable ahí no
+            rompe a nadie; es la dirección segura.
 
     AccountPaymentCreate:
       type: object
@@ -10230,11 +10441,15 @@ components:
         amount: { type: number, format: double, minimum: 0.01 }
         method: { $ref: '#/components/schemas/AccountPaymentMethod' }
         payment_channel:
-          $ref: '#/components/schemas/PaymentChannel'
+          allOf:
+            - $ref: '#/components/schemas/PaymentChannel'
+          nullable: true
           description: >
             ★ v0.19.1. Ver PaymentChannel — solo EFECTIVO/CHEQUE, condicionado
             por rol del caller (ver ahí el detalle completo). Null si
-            method ∈ {TRANSFERENCIA, OTRO}.
+            method ∈ {TRANSFERENCIA, OTRO}. ★ v0.49.1 — declarado nullable de
+            verdad: antes el `$ref` con hermanos dejaba la nulabilidad sin
+            expresar.
         transfer_bank_account:
           allOf:
             - $ref: '#/components/schemas/TransferBankAccount'
@@ -10289,7 +10504,11 @@ components:
         salesperson_code: { type: string }
         amount: { type: number, format: double }
         method: { $ref: '#/components/schemas/AccountPaymentMethod' }
-        payment_channel: { $ref: '#/components/schemas/PaymentChannel' }
+        payment_channel:
+          allOf:
+            - $ref: '#/components/schemas/PaymentChannel'
+          nullable: true
+          description: ★ v0.49.1 — NULL cuando el método no es EFECTIVO ni CHEQUE.
         transfer_bank_account:
           allOf:
             - $ref: '#/components/schemas/TransferBankAccount'
@@ -11040,7 +11259,12 @@ components:
           description: Código (U_RSAP_SHIPPING_CODE).
         name:
           type: string
-          description: Nombre legible (BNX3, BRK1, QNS2...).
+          nullable: true
+          description: >
+            Nombre legible (BNX3, BRK1, QNS2...).
+
+            ★ v0.49.1 — NULLABLE: hay códigos en uso sin nombre en la UDT.
+            La pantalla debe mostrar el código a secas, no una celda vacía.
         delivery_days:
           type: array
           items: { $ref: '#/components/schemas/WeekDay' }
@@ -12828,9 +13052,21 @@ components:
 
             · ADMIN — OBLIGATORIO. Un ADMIN no tiene salesperson_code propio,
               así que debe elegir explícitamente de qué vendedor es el pedido
-              (400 si falta). Debe existir y corresponder a una cuenta con
-              código de vendedor — usar GET /admin/salespersons para poblar
-              el selector.
+              (400 si falta).
+
+              ★ CORREGIDO EN v0.50.0 — SE VALIDA CONTRA EL ESPEJO DE SAP, y
+              basta con que el vendedor esté ACTIVO. NO se exige que tenga
+              cuenta de login en el WMS.
+
+              Hasta v0.50.0 este texto decía que el código debía corresponder
+              a "una cuenta con código de vendedor", y el middleware lo
+              implementó tal cual: validaba contra la tabla de login. Con 16
+              de los 19 vendedores activos de SAP sin usuario, eso dejaba
+              1.800 de 2.638 clientes sin poder recibir un pedido. El
+              contrato estaba mal, no el código.
+
+              400 `salesperson_code_not_found` queda SOLO para un código que
+              no existe en SAP o está inactivo. Ver la regla global 👤.
 
             El pedido queda atribuido a este vendedor para todo efecto
             (comisiones, filtros, asignación de clientes). Quién lo creó
@@ -13645,7 +13881,13 @@ components:
       type: object
       properties:
         client_code: { type: string }
-        name: { type: string }
+        name:
+          type: string
+          nullable: true
+          description: >
+            ★ v0.49.1 — NULLABLE. Hoy no hay un solo cliente sin nombre en
+            2.638, pero la columna lo admite y cero casos no es
+            imposibilidad. Ante la duda, nullable (ver v0.48.0).
         address: { type: string, nullable: true }
         city: { type: string, nullable: true }
         zipcode: { type: string, nullable: true }
