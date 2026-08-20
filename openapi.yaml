@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.53.0
+  version: 0.53.1
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -106,6 +106,20 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.53.1 — UN CAMPO, UNA DECLARACIÓN
+    ══════════════════════════════════════════════════════════════════════════
+
+    Solo TEXTO. `AccountPaymentDetail.salesperson_code` estaba declarado
+    nullable y en `PendingAccountPayment` no — mismo campo, misma columna,
+    que no admite null. Gana la declaración que coincide con el dato.
+
+    Lo encontró el middleware al implementar v0.53.0 y siguió la correcta,
+    así que la diferencia cayó del lado seguro. Se corrige igual: dos
+    declaraciones distintas del mismo campo le dan dos formas incompatibles
+    a quien genere tipos desde el contrato, según de qué schema venga la
+    respuesta.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.53.0 — UN PAGO DECIDIDO SE VUELVE INALCANZABLE
@@ -11515,7 +11529,16 @@ components:
         payment_uuid: { type: string, format: uuid }
         client_code: { type: string }
         client_name: { type: string }
-        salesperson_code: { type: string, nullable: true }
+        salesperson_code:
+          type: string
+          description: >
+            ★ v0.53.1 — NO nullable. v0.53.0 lo declaró nullable acá y
+            no-nullable en `PendingAccountPayment`: mismo campo, misma
+            columna, que no admite null. Gana el que coincide con el dato.
+
+            Dos declaraciones distintas del mismo campo no son un detalle de
+            estilo: quien genere tipos a partir del contrato obtiene dos
+            formas incompatibles según de qué schema venga la respuesta.
         amount: { type: number, format: double }
         status: { $ref: '#/components/schemas/ApprovalStatus' }
         method: { $ref: '#/components/schemas/AccountPaymentMethod' }
