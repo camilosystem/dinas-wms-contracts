@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.54.0
+  version: 0.54.1
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -106,6 +106,22 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.54.1 — LA OFICINA TAMBIÉN PUEDE DESCARTAR EL SUYO
+    ══════════════════════════════════════════════════════════════════════════
+
+    v0.54.0 le dio a la oficina crear, agregar, quitar, cerrar y reabrir. Le
+    faltó descartar.
+
+    El único `DELETE` de un depósito completo era el de v0.52.1, que exige
+    que sea del VENDEDOR que llama. Un `OF-` no es de ningún vendedor, así
+    que esa puerta no le servía: la oficina podía vaciar un depósito creado
+    por error, pero no sacarlo de la lista.
+
+    `DELETE /admin/deposits/{deposit_uuid}` — mismas reglas que el del
+    vendedor: solo VACÍO y ABIERTO, y el número no se libera. Un cerrado no
+    se descarta: dice que ese dinero se entregó en un banco.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.54.0 — LA OFICINA TAMBIÉN ARMA DEPÓSITOS
@@ -5225,6 +5241,40 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
 
   /admin/deposits/{deposit_uuid}:
+    delete:
+      tags: [deposits-admin]
+      summary: Descartar un depósito de oficina creado por error
+      description: >
+        ★ NUEVO en v0.54.1. REQUIERE ADMIN o APROBADOR_PAGOS. El depósito
+        debe ser DE OFICINA, estar ABIERTO y estar VACÍO.
+
+        Mismas reglas que el descarte del vendedor (v0.52.1): con pagos
+        adentro → 409 `deposit_not_empty` diciendo cuántos tiene; cerrado →
+        409, porque un depósito cerrado es la constancia de una entrega
+        física. Y el número NO se libera: descartado el `OF-0004`, el próximo
+        es el `OF-0005`.
+
+        Un depósito de VENDEDOR no se descarta por acá → 403. Para eso está
+        `DELETE /deposits/{deposit_uuid}`, que exige que sea del vendedor que
+        llama. Cada dueño maneja los suyos.
+      parameters:
+        - name: deposit_uuid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204':
+          description: Depósito descartado
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            `deposit_not_empty` (todavía tiene pagos) o el depósito ya está
+            cerrado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
     get:
       tags: [deposits-admin]
       summary: Qué pagos incluye un depósito
