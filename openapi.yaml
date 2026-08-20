@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.53.1
+  version: 0.54.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -106,6 +106,79 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.54.0 — LA OFICINA TAMBIÉN ARMA DEPÓSITOS
+    ══════════════════════════════════════════════════════════════════════════
+
+    ⚠️ ESTO CORRIGE DOS AFIRMACIONES DE v0.52.0 QUE ESTABAN MAL:
+
+      · «En el Dashboard: solo mirar. La oficina NO arma, no cierra ni
+        reabre depósitos. El depósito es del vendedor que llevó el dinero.»
+      · «Los drivers no — todavía.»
+
+      Las dos partían de suponer que el único dinero físico que hay que
+      llevar al banco es el que recoge un vendedor. No lo es: los drivers
+      recogen efectivo y cheques en ruta todos los días, y quien los lleva
+      al banco es la oficina, no el driver.
+
+    ★ UN DEPÓSITO AHORA TIENE DUEÑO, Y HAY DOS CLASES
+      · DE VENDEDOR — lo arma él desde la app, con sus propios pagos de
+        cartera. Referencia `<código>-<consecutivo>`, ej. `11-0001`.
+      · DE OFICINA — lo arma alguien del Dashboard, con pagos de CUALQUIER
+        vendedor o driver. Referencia `OF-<consecutivo>`, con su propio
+        contador.
+
+      El prefijo distingue de un vistazo quién armó el depósito, que es lo
+      que hace falta saber al conciliar contra el banco.
+
+    ★ UN DEPÓSITO DE OFICINA PUEDE MEZCLAR LAS DOS CLASES DE PAGO
+      Pagos de cartera (los del vendedor, `AccountPayment`) y pagos de ruta
+      (los del driver, `Payment`). Son entidades distintas en este contrato
+      y siempre lo van a ser, pero **físicamente son lo mismo**: billetes y
+      cheques que alguien lleva al banco en el mismo viaje. Si el documento
+      no pudiera reflejarlo, la oficina tendría que armar dos papeles para
+      un solo depósito real.
+
+      Por eso `DepositedPayment` gana `payment_kind` (CARTERA | RUTA) y un
+      campo `tender` NORMALIZADO (EFECTIVO | CHEQUE).
+
+      ⚠️ `tender` existe porque las dos entidades nombran lo mismo distinto:
+      `AccountPaymentMethod` dice EFECTIVO y `PaymentType` dice CASH. Sumar
+      `cash_amount` sobre dos enums que no coinciden es la clase de cuenta
+      que sale bien hasta que alguien agrega un valor a uno de los dos. El
+      servidor normaliza una vez; nadie más traduce.
+
+    ★ LO QUE NO CAMBIA, Y ES LO MÁS IMPORTANTE DE ESTE BLOQUE
+      **El depósito sigue sin ir a SAP, y sigue sin ser un flujo de
+      aprobación.** Agrupa dinero físico, nada más.
+
+      Los pagos de ruta hoy no tienen facturas asignadas ni camino a SAP
+      —el contrato dice desde v0.16.0 que «el admin lo aplica en SAP
+      manualmente»— y ese hueco es real. Pero completarlos, revisarlos y
+      autorizarlos es un acto propio, con su propia pantalla, y queda para
+      un bloque aparte.
+
+      Meterlo adentro del depósito los ataría a dos relojes distintos: el
+      depósito cierra cuando el dinero está en el banco; la autorización,
+      cuando la contabilidad está bien. Nunca es el mismo momento, y un
+      documento que espera las dos cosas no se puede cerrar cuando
+      corresponde.
+
+    ★ UN PAGO ANULADO NO SE DEPOSITA — Y UNO DEPOSITADO NO SE ANULA
+      Un pago de ruta anulado no tiene dinero detrás: no entra.
+
+      Y al revés: mientras un pago esté dentro de un depósito CERRADO, NO se
+      puede anular → 409. Anularlo dejaría un depósito cuyo total ya no
+      coincide con lo que dice llevar, y ese descuadre aparece semanas
+      después sin que nadie sepa de dónde salió. Si de verdad hay que
+      anularlo, se reabre el depósito —que deja rastro—, se quita el pago y
+      recién ahí se anula.
+
+    ★ UN PAGO ESTÁ EN UN DEPÓSITO O EN NINGUNO — AHORA ENTRE LOS DOS MUNDOS
+      La regla no cambia, se amplía: un pago de cartera que un vendedor ya
+      metió en el suyo NO lo puede tomar la oficina, y viceversa. El primero
+      que lo toma lo tiene, y el 409 dice en cuál está.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.53.1 — UN CAMPO, UNA DECLARACIÓN
@@ -281,19 +354,21 @@ info:
       justo donde se equivoca cualquiera.
 
     ★ EN EL DASHBOARD: SOLO MIRAR
+      ⚠️ SUPERADO POR v0.54.0 — la oficina SÍ arma, cierra y reabre sus
+      propios depósitos. Lo que sigue describía v0.52.0 y ya no rige:
+
       · Cada pago muestra en qué depósito viajó (`deposit_reference`).
       · Un visor lista los depósitos y permite abrir uno para ver qué pagos
         incluye.
 
-      La oficina NO arma, no cierra ni reabre depósitos. El depósito es del
-      vendedor que llevó el dinero.
+      Lo que sí sigue en pie: la oficina no toca los depósitos DE UN
+      VENDEDOR. Cada dueño maneja los suyos.
 
     ★ LOS DRIVERS NO — TODAVÍA
-      También recogen efectivo y cheques en ruta (`/dispatch/payments`, otro
-      concepto distinto) y tienen la misma necesidad física. Queda fuera a
-      propósito: se construye para vendedores y, si hace falta, se agrega
-      después con este mismo diseño. Se dice para que quede claro que es una
-      decisión y no un olvido.
+      ⚠️ SUPERADO POR v0.54.0. Era falso el supuesto de fondo: el dinero que
+      recoge un driver lo lleva al banco la OFICINA, no el driver. Por eso
+      no hacía falta un depósito de driver sino que los pagos de ruta
+      entraran en el depósito de oficina, que es lo que v0.54.0 resuelve.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.51.0 — DESARMAR UN PALLET, Y BORRAR UNO CREADO POR ERROR
@@ -4987,9 +5062,62 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
 
   /admin/deposits:
+    post:
+      tags: [deposits-admin]
+      summary: Crear un depósito de oficina
+      description: >
+        ★ NUEVO en v0.54.0. REQUIERE ADMIN o APROBADOR_PAGOS.
+
+        Crea un depósito cuyo dueño es LA OFICINA, con referencia
+        `OF-<consecutivo>` de su propio contador. Puede agrupar pagos de
+        cualquier vendedor o driver.
+
+        La referencia la asigna el servidor y NO se reusa, igual que en los
+        de vendedor.
+
+        Idempotente por `deposit_uuid`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [deposit_uuid]
+              properties:
+                deposit_uuid: { type: string, format: uuid }
+                payment_uuids:
+                  type: array
+                  nullable: true
+                  items: { type: string, format: uuid }
+                  description: >
+                    Pagos con los que nace. Pueden ser de RUTA o de CARTERA,
+                    mezclados.
+                note: { type: string, nullable: true }
+      responses:
+        '201':
+          description: Depósito creado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DepositDetail' }
+        '200':
+          description: Reintento idempotente
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DepositDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: >
+            Algún pago ya está en otro depósito
+            (`payment_already_deposited`, con su `deposit_reference`), o está
+            ANULADO (`payment_voided`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
     get:
       tags: [deposits-admin]
-      summary: Visor de depósitos (solo lectura)
+      summary: Visor de depósitos
       description: >
         ★ NUEVO en v0.52.0. REQUIERE ADMIN o APROBADOR_PAGOS.
 
@@ -5032,6 +5160,70 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /admin/deposits/available-payments:
+    get:
+      tags: [deposits-admin]
+      summary: Pagos disponibles para armar un depósito de oficina
+      description: >
+        ★ NUEVO en v0.54.0. REQUIERE ADMIN o APROBADOR_PAGOS.
+
+        Todo el dinero físico que hay para llevar al banco y todavía no está
+        en ningún depósito, venga de donde venga:
+
+          · pagos de RUTA (los que registró un driver), y
+          · pagos de CARTERA de cualquier vendedor, en EFECTIVO o CHEQUE.
+
+        NO incluye pagos de ruta ANULADOS: no hay dinero detrás.
+
+        NO filtra por estado de aprobación — depositar y aprobar son vías
+        separadas.
+
+        ⚠️ Un pago que un vendedor ya metió en SU depósito no aparece acá.
+        El primero que lo toma lo tiene.
+      parameters:
+        - name: kind
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/DepositPaymentKind' }
+          description: Filtrar por clase (RUTA o CARTERA). Sin esto, las dos.
+        - name: truck_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+          description: >
+            Solo pagos de RUTA de ese camión. Es el filtro con el que se arma
+            un depósito "por ruta", que es el caso normal de la oficina.
+        - name: driver_username
+          in: query
+          required: false
+          schema: { type: string }
+        - name: salesperson_code
+          in: query
+          required: false
+          schema: { type: string }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date }
+          description: Desde esta fecha (día de Nueva York). Por defecto, últimos 30 días.
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: Pagos disponibles
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  payments:
+                    type: array
+                    items: { $ref: '#/components/schemas/DepositablePayment' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /admin/deposits/{deposit_uuid}:
     get:
       tags: [deposits-admin]
@@ -5052,6 +5244,158 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/deposits/{deposit_uuid}/payments:
+    post:
+      tags: [deposits-admin]
+      summary: Agregar pagos a un depósito de oficina
+      description: >
+        ★ NUEVO en v0.54.0. REQUIERE ADMIN o APROBADOR_PAGOS. El depósito
+        debe ser DE OFICINA y estar ABIERTO → 409.
+
+        ⚠️ La oficina NO puede tocar el depósito de un vendedor → 403. Cada
+        dueño maneja los suyos.
+
+        Rechaza pagos de ruta ANULADOS (`payment_voided`) y pagos que ya
+        están en otro depósito (`payment_already_deposited`, con su
+        referencia).
+      parameters:
+        - name: deposit_uuid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [payment_uuids]
+              properties:
+                payment_uuids:
+                  type: array
+                  minItems: 1
+                  items: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Pagos agregados
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DepositDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            Depósito cerrado, pago ya depositado
+            (`payment_already_deposited`) o pago anulado (`payment_voided`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /admin/deposits/{deposit_uuid}/payments/{payment_uuid}:
+    delete:
+      tags: [deposits-admin]
+      summary: Quitar un pago de un depósito de oficina
+      description: >
+        ★ NUEVO en v0.54.0. REQUIERE ADMIN o APROBADOR_PAGOS. De OFICINA y
+        ABIERTO → 409. El pago vuelve a estar disponible.
+      parameters:
+        - name: deposit_uuid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - name: payment_uuid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Pago quitado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DepositDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: El depósito está cerrado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /admin/deposits/{deposit_uuid}/close:
+    post:
+      tags: [deposits-admin]
+      summary: Marcar como Depositado un depósito de oficina
+      description: >
+        ★ NUEVO en v0.54.0. REQUIERE ADMIN o APROBADOR_PAGOS. De OFICINA y
+        ABIERTO. Vacío → 400. `deposited_at` es la hora real del depósito.
+      parameters:
+        - name: deposit_uuid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deposited_at: { type: string, format: date-time, nullable: true }
+                note: { type: string, nullable: true }
+      responses:
+        '200':
+          description: Depósito cerrado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DepositDetail' }
+        '400':
+          description: El depósito está vacío
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/deposits/{deposit_uuid}/reopen:
+    post:
+      tags: [deposits-admin]
+      summary: Reabrir un depósito de oficina
+      description: >
+        ★ NUEVO en v0.54.0. REQUIERE ADMIN o APROBADOR_PAGOS. De OFICINA y
+        CERRADO → 409. Deja rastro (`reopened_by`, `reopened_at`) que no se
+        borra al volver a cerrar.
+      parameters:
+        - name: deposit_uuid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, nullable: true }
+      responses:
+        '200':
+          description: Depósito reabierto
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DepositDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: El depósito ya está abierto
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /admin/account-payments/pending:
     get:
@@ -10232,6 +10576,11 @@ paths:
         El MOTIVO es obligatorio — un pago anulado sin explicación es una
         bandera roja que nadie puede resolver después.
 
+        ⚠️ ★ v0.54.0 — Si el pago está dentro de un depósito CERRADO → 409
+        `payment_in_closed_deposit`, con la referencia. Anularlo dejaría ese
+        depósito diciendo que llevó al banco un dinero que ahora no existe.
+        Primero se reabre el depósito y se quita el pago.
+
         Se puede anular EN CUALQUIER MOMENTO, incluso con la ruta ya cerrada:
         el error suele notarse al cuadrar la caja en la bodega.
 
@@ -11225,6 +11574,47 @@ components:
             GET /evidence-photos/{id} (p. ej. "/evidence-photos/3fa85f64-...") —
             no es una URL externa ni absoluta.
 
+    DepositOwnerType:
+      type: string
+      enum: [VENDEDOR, OFICINA]
+      description: >
+        ★ NUEVO en v0.54.0. Quién armó el depósito, y por lo tanto quién
+        puede modificarlo.
+          VENDEDOR  Lo arma él desde la app, con sus propios pagos de cartera.
+                    Referencia `<código>-<consecutivo>`, ej. `11-0001`.
+          OFICINA   Lo arma alguien del Dashboard, con pagos de cualquier
+                    vendedor o driver. Referencia `OF-<consecutivo>`.
+
+        Cada dueño maneja los suyos: la oficina no toca el depósito de un
+        vendedor y el vendedor no toca el de la oficina → 403.
+
+    DepositPaymentKind:
+      type: string
+      enum: [CARTERA, RUTA]
+      description: >
+        ★ NUEVO en v0.54.0. De qué entidad viene el pago que está dentro del
+        depósito.
+          CARTERA  Un `AccountPayment` — lo reportó un vendedor, se aplica a
+                   facturas y pasa por aprobación.
+          RUTA     Un `Payment` — lo registró un driver en la calle. No tiene
+                   facturas asignadas ni aprobación.
+
+        Son entidades distintas en este contrato y lo van a seguir siendo.
+        Conviven dentro de un depósito porque FÍSICAMENTE son lo mismo:
+        billetes y cheques que alguien lleva al banco en el mismo viaje.
+
+    DepositTender:
+      type: string
+      enum: [EFECTIVO, CHEQUE]
+      description: >
+        ★ NUEVO en v0.54.0. Con qué se pagó, NORMALIZADO.
+
+        Existe porque las dos entidades nombran lo mismo distinto:
+        `AccountPaymentMethod` dice EFECTIVO y `PaymentType` dice CASH. Sumar
+        `cash_amount` sobre dos enums que no coinciden es la clase de cuenta
+        que sale bien hasta que alguien le agrega un valor a uno de los dos.
+        El servidor normaliza una vez; ningún cliente traduce.
+
     DepositStatus:
       type: string
       enum: [ABIERTO, DEPOSITADO]
@@ -11250,8 +11640,24 @@ components:
             problema que aparece semanas después, conciliando.
           example: "6-0001"
         status: { $ref: '#/components/schemas/DepositStatus' }
-        salesperson_code: { type: string }
+        owner_type:
+          allOf:
+            - $ref: '#/components/schemas/DepositOwnerType'
+          description: ★ NUEVO en v0.54.0. VENDEDOR u OFICINA.
+        salesperson_code:
+          type: string
+          nullable: true
+          description: >
+            ★ v0.54.0 — NULLABLE. Solo en los depósitos DE VENDEDOR. En uno
+            de oficina es null, y eso no es un dato faltante: ese depósito no
+            pertenece a ningún vendedor, aunque contenga pagos de varios.
         salesperson_name: { type: string, nullable: true }
+        created_by:
+          type: string
+          nullable: true
+          description: >
+            ★ NUEVO en v0.54.0. Usuario que lo creó. En uno de oficina es la
+            persona del Dashboard; en uno de vendedor coincide con el dueño.
         created_at: { type: string, format: date-time }
         deposited_at:
           type: string
@@ -11270,13 +11676,17 @@ components:
           type: number
           format: double
           description: >
-            Suma de los pagos en EFECTIVO. Va aparte porque la papeleta del
-            banco separa efectivo de cheques, y hacer esa cuenta a mano
-            frente al cajero es justo donde se equivoca cualquiera.
+            Suma de los pagos con `tender: EFECTIVO`. Va aparte porque la
+            papeleta del banco separa efectivo de cheques, y hacer esa cuenta
+            a mano frente al cajero es justo donde se equivoca cualquiera.
+
+            ★ v0.54.0 — se calcula sobre `tender`, el campo normalizado, y no
+            sobre los enums de origen. Un depósito de oficina puede mezclar
+            pagos de cartera y de ruta, que nombran el efectivo distinto.
         check_amount:
           type: number
           format: double
-          description: Suma de los pagos en CHEQUE.
+          description: "Suma de los pagos con `tender: CHEQUE`."
         reopened_at:
           type: string
           format: date-time
@@ -11307,24 +11717,65 @@ components:
       description: >
         ★ NUEVO en v0.52.0. Un pago dentro de un depósito, con lo que hace
         falta para reconocerlo sin abrir el pago.
+
+        ★ v0.54.0 — puede ser de CARTERA o de RUTA. Los campos comunes van
+        siempre; los propios de cada clase son nullable y su ausencia
+        significa "no aplica a esta clase", nunca "falta el dato".
       properties:
         payment_uuid: { type: string, format: uuid }
+        payment_kind:
+          allOf:
+            - $ref: '#/components/schemas/DepositPaymentKind'
+          description: ★ NUEVO en v0.54.0. CARTERA o RUTA.
         client_code: { type: string }
         client_name: { type: string }
         amount: { type: number, format: double }
-        method: { $ref: '#/components/schemas/AccountPaymentMethod' }
+        tender:
+          allOf:
+            - $ref: '#/components/schemas/DepositTender'
+          description: >
+            ★ NUEVO en v0.54.0. EFECTIVO o CHEQUE, normalizado. Es el campo
+            sobre el que se calculan `cash_amount` y `check_amount`. No
+            traduzcas los enums de origen por tu cuenta.
         check_number:
           type: string
           nullable: true
           description: Solo en CHEQUE. Es lo que el cajero compara contra el papel.
-        payment_date: { type: string, format: date }
+        payment_date:
+          type: string
+          format: date
+          description: >
+            Día en que se recibió el dinero (día de Nueva York). En CARTERA
+            es el `payment_date` del pago; en RUTA se deriva de su
+            `occurred_at`, la hora real de la visita.
+        salesperson_code:
+          type: string
+          nullable: true
+          description: ★ v0.54.0 — Solo en CARTERA. NULL en un pago de ruta.
+        truck_name:
+          type: string
+          nullable: true
+          description: >
+            ★ NUEVO en v0.54.0. Solo en RUTA. Es lo que permite armar y
+            revisar un depósito "por ruta", que es el caso normal de la
+            oficina.
+        driver_name:
+          type: string
+          nullable: true
+          description: ★ NUEVO en v0.54.0. Solo en RUTA.
         approval_status:
           allOf:
             - $ref: '#/components/schemas/ApprovalStatus'
+          nullable: true
           description: >
             El estado de aprobación del pago, informativo. NO condiciona
             nada del depósito: un pago pendiente se puede depositar y un
             pago depositado se puede rechazar después.
+
+            ★ v0.54.0 — NULL en los pagos de RUTA, que no pasan por ninguna
+            aprobación. NULL significa "esta clase de pago no se aprueba",
+            no "todavía no se aprobó". La pantalla no debe mostrarlo como
+            pendiente.
         invoice_doc_nums:
           type: array
           items: { type: string }
@@ -11332,25 +11783,44 @@ components:
             Las facturas a las que se aplica ese pago. Vacío si es un pago a
             cuenta sin aplicar.
 
+            ★ v0.54.0 — SIEMPRE vacío en los pagos de RUTA: hoy no tienen
+            facturas asignadas. Vacío ahí significa "todavía nadie las
+            asignó", y ese trabajo es de otro bloque.
+
     DepositablePayment:
       type: object
       description: >
-        ★ NUEVO en v0.52.0. Un pago que el vendedor puede meter en un
-        depósito: suyo, en EFECTIVO o CHEQUE, y que no está en ningún otro.
+        ★ NUEVO en v0.52.0. Un pago que se puede meter en un depósito: en
+        EFECTIVO o CHEQUE, y que no está en ningún otro.
+
+        ★ v0.54.0 — mismos campos que `DepositedPayment` salvo los del
+        depósito, a propósito: lo que se elige y lo que queda elegido se leen
+        igual. En `/deposits/available-payments` (vendedor) son solo suyos y
+        de CARTERA; en `/admin/deposits/available-payments` pueden ser de
+        cualquiera y de las dos clases.
       properties:
         payment_uuid: { type: string, format: uuid }
+        payment_kind: { $ref: '#/components/schemas/DepositPaymentKind' }
         client_code: { type: string }
         client_name: { type: string }
         amount: { type: number, format: double }
-        method: { $ref: '#/components/schemas/AccountPaymentMethod' }
+        tender: { $ref: '#/components/schemas/DepositTender' }
         check_number: { type: string, nullable: true }
         payment_date: { type: string, format: date }
+        salesperson_code: { type: string, nullable: true }
+        truck_name:
+          type: string
+          nullable: true
+          description: ★ v0.54.0 — Solo en RUTA. Con esto se arma un depósito por ruta.
+        driver_name: { type: string, nullable: true }
         approval_status:
           allOf:
             - $ref: '#/components/schemas/ApprovalStatus'
+          nullable: true
           description: >
-            Informativo. La lista NO filtra por esto: el dinero está en su
-            bolsillo lo haya aprobado alguien o no.
+            Informativo. La lista NO filtra por esto: el dinero está
+            recogido lo haya aprobado alguien o no. ★ v0.54.0 — NULL en los
+            pagos de RUTA, que no se aprueban.
         invoice_doc_nums:
           type: array
           items: { type: string }
@@ -13495,6 +13965,19 @@ components:
           description: >
             ★ Si el pago fue ANULADO. El registro sigue existiendo — el rastro
             importa. Los anulados NO suman a los totales.
+
+            ⚠️ ★ v0.54.0 — Un pago ANULADO no se puede depositar, y uno que
+            está dentro de un depósito CERRADO no se puede anular → 409.
+            Anularlo dejaría un depósito cuyo total ya no coincide con lo que
+            dice llevar, y ese descuadre aparece semanas después sin que
+            nadie sepa de dónde salió. Si de verdad hay que anularlo: se
+            reabre el depósito, se quita el pago, y recién ahí se anula.
+        deposit_reference:
+          type: string
+          nullable: true
+          description: >
+            ★ NUEVO en v0.54.0. En qué depósito viajó este dinero al banco
+            (ej. `OF-0007`). NULL si todavía no está en ninguno.
         voided_at: { type: string, format: date-time, nullable: true }
         voided_by:
           type: string
