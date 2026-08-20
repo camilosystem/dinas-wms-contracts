@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.52.1
+  version: 0.53.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -106,6 +106,62 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.53.0 — UN PAGO DECIDIDO SE VUELVE INALCANZABLE
+    ══════════════════════════════════════════════════════════════════════════
+
+    Al conectar el visor de depósitos apareció un hueco que no es de este
+    bloque y es más viejo: **un pago de cartera, una vez decidido, no se
+    puede volver a mirar.**
+
+    ★ CÓMO ERA
+      · La única lista es `GET /admin/account-payments/pending`, que devuelve
+        solo PENDIENTE_APROBACION.
+      · `AccountPaymentDetail` —el único schema con el detalle— se devolvía
+        únicamente COMO RESULTADO de aprobar o rechazar.
+      · No existía `GET /admin/account-payments/{payment_uuid}`.
+
+      Entonces, apenas alguien decide, el pago desaparece de la única
+      pantalla donde vivía. Para verlo otra vez había que volver a
+      aprobarlo, que es imposible.
+
+      ★ ES EXACTAMENTE EL MISMO HUECO QUE v0.31.2 CORRIGIÓ PARA LAS
+      SOLICITUDES DE CRÉDITO, con las mismas tres piezas y por la misma
+      causa: la bandeja lista un schema reducido, el detalle vive como
+      respuesta de una acción, y nadie notó que faltaba la puerta de lectura
+      hasta que alguien quiso leer. Segunda vez.
+
+    ★ QUÉ CAMBIA
+      1. `GET /admin/account-payments/{payment_uuid}` — NUEVO. Devuelve
+         `AccountPaymentDetail` para cualquier pago, decidido o no.
+      2. `AccountPaymentDetail` gana lo que ya tenía la bandeja y a él le
+         faltaba: `salesperson_code`, `method`, `payment_channel`,
+         `transfer_bank_account`, `check_number`, `bank_code`,
+         `payment_date`, `comments`, `evidence_image_url`.
+
+         Sin esos campos el "detalle" decía cuánto y quién aprobó, pero no
+         CÓMO pagó el cliente. Mismo agregado que recibió
+         `CreditRequestDetail` en v0.39.0, por la misma razón.
+      3. `PendingAccountPayment` gana `deposit_reference`.
+
+    ★ POR QUÉ `deposit_reference` TAMBIÉN EN LA BANDEJA
+      v0.52.0 lo puso solo en el detalle. Pero la bandeja es donde el
+      aprobador DECIDE, y saber que ese dinero ya se entregó en el banco es
+      contexto para decidir, no una consulta posterior. Ponerlo solo en el
+      detalle significaba que el dato aparecía después de haberlo
+      necesitado.
+
+      Mismo criterio que `created_by` y `source_return_id` en las
+      solicitudes de crédito desde v0.39.0: lo que cambia una decisión va
+      donde se decide.
+
+    ⚠️ LO QUE SIGUE FALTANDO, DICHO A PROPÓSITO
+      No hay ninguna lista de pagos DECIDIDOS: se puede abrir uno si se
+      conoce su `payment_uuid`, o llegar a él desde un depósito, pero no
+      buscar "los pagos de este cliente el mes pasado". Es una superficie
+      nueva y una decisión aparte; queda anotada como hueco conocido y no
+      como algo que se pasó por alto.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.52.1 — DESCARTAR UN DEPÓSITO CREADO POR ERROR
@@ -5007,6 +5063,37 @@ paths:
                     items: { $ref: '#/components/schemas/PendingAccountPayment' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/account-payments/{payment_uuid}:
+    get:
+      tags: [admin]
+      summary: Detalle de un pago de cartera (decidido o no)
+      description: >
+        ★ NUEVO en v0.53.0. REQUIERE rol ADMIN o APROBADOR_PAGOS.
+
+        POR QUÉ EXISTE: hasta v0.53.0, `AccountPaymentDetail` solo se
+        devolvía como respuesta de aprobar o rechazar, y la única lista
+        —`/admin/account-payments/pending`— trae solo los pendientes. Apenas
+        alguien decidía, el pago desaparecía de la única pantalla donde
+        vivía y no había forma de volver a mirarlo.
+
+        Es el mismo hueco que v0.31.2 corrigió para las solicitudes de
+        crédito, con las mismas tres piezas: bandeja con schema reducido,
+        detalle como respuesta de una acción, y ninguna puerta de lectura.
+      parameters:
+        - name: payment_uuid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: El pago con su detalle completo
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountPaymentDetail' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /admin/account-payments/{payment_uuid}/approve:
     post:
@@ -11387,6 +11474,18 @@ components:
         proposed_applications:
           type: array
           items: { $ref: '#/components/schemas/InvoiceApplication' }
+        deposit_reference:
+          type: string
+          nullable: true
+          description: >
+            ★ NUEVO en v0.53.0. En qué depósito viajó este pago al banco
+            (ej. `6-0001`). NULL si todavía no está en ninguno.
+
+            Está en la BANDEJA y no solo en el detalle porque acá es donde
+            se decide, y saber que ese dinero ya se entregó es contexto para
+            decidir. En el detalle aparecía después de haberlo necesitado.
+
+            ⚠️ No condiciona nada: depositar y aprobar son vías separadas.
         client_statement:
           $ref: '#/components/schemas/ClientStatement'
           description: Contexto completo para decidir sin salir de la bandeja.
@@ -11407,12 +11506,34 @@ components:
 
     AccountPaymentDetail:
       type: object
+      description: >
+        ★ v0.53.0 — Gana los campos que ya tenía la bandeja y a él le
+        faltaban. Sin ellos el "detalle" decía cuánto y quién aprobó, pero
+        no CÓMO pagó el cliente. Mismo agregado que recibió
+        `CreditRequestDetail` en v0.39.0.
       properties:
         payment_uuid: { type: string, format: uuid }
         client_code: { type: string }
         client_name: { type: string }
+        salesperson_code: { type: string, nullable: true }
         amount: { type: number, format: double }
         status: { $ref: '#/components/schemas/ApprovalStatus' }
+        method: { $ref: '#/components/schemas/AccountPaymentMethod' }
+        payment_channel:
+          allOf:
+            - $ref: '#/components/schemas/PaymentChannel'
+          nullable: true
+          description: NULL cuando el método no es EFECTIVO ni CHEQUE.
+        transfer_bank_account:
+          allOf:
+            - $ref: '#/components/schemas/TransferBankAccount'
+          nullable: true
+          description: NULL cuando el pago no fue por transferencia.
+        check_number: { type: string, nullable: true }
+        bank_code: { type: string, nullable: true }
+        payment_date: { type: string, format: date }
+        comments: { type: string, nullable: true }
+        evidence_image_url: { type: string, nullable: true }
         final_applications:
           type: array
           items: { $ref: '#/components/schemas/InvoiceApplication' }
