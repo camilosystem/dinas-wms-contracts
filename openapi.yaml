@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.54.1
+  version: 0.55.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -67,6 +67,21 @@ info:
     trabajar dentro del sistema; la pertenencia es del negocio y existe
     antes.
 
+    ★ Y LA SEGUNDA MITAD (★ v0.55.0): DE DÓNDE SALE LA PERTENENCIA
+      **A qué vendedor pertenece un documento lo dice EL CLIENTE.** No el
+      token de quien lo carga, no la tabla de login, y no lo que alguien
+      eligió en un selector.
+
+      Tres veces contestada mal: v0.33.2 (crédito, salía del token — hubo
+      atribución cruzada real), v0.50.0 (pedidos, validaba contra el login —
+      1.800 clientes bloqueados) y v0.55.0 (pagos, obligaba a elegirlo a
+      mano).
+
+      La única excepción es el PEDIDO, y es de negocio: un pedido sí puede
+      ser tomado por un vendedor distinto del asignado al cliente. Un pago
+      no. Cuando aparezca un documento nuevo, la pregunta a hacer es si el
+      negocio admite esa diferencia — el valor por defecto es que no.
+
     ★ EN CONCRETO
       · Validar que un `salesperson_code` existe se hace contra el ESPEJO DE
         SAP (`SapSalespersons`), y se acepta si está activo.
@@ -106,6 +121,61 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.55.0 — A QUIÉN PERTENECE UN PAGO LO DICE EL CLIENTE
+    ══════════════════════════════════════════════════════════════════════════
+
+    ★ `AccountPaymentCreate.salesperson_code` SE ELIMINA
+      El servidor lo resuelve DESDE EL CLIENTE, para todos los que llaman:
+      vendedor, admin y aprobador. Nadie lo elige y nadie lo manda.
+
+      LA REGLA DE NEGOCIO, dicha por quien la manda: *"Un pago NO se recibe
+      por un vendedor diferente al asignado al cliente. Así que no hay
+      necesidad de preguntarlo, y menos de impedir la creación de un pago
+      por especificar el vendedor."*
+
+      Hasta acá, un ADMIN estaba OBLIGADO a elegirlo en un selector. Eso
+      convertía en pregunta algo que no tiene más que una respuesta posible
+      —y que el servidor ya sabe—, y de paso podía bloquear la carga de un
+      pago real por no acertar un dato derivable.
+
+    ★ EL CAMPO SE VA DEL SCHEMA, PERO SI LLEGA NO ROMPE
+      No se declara más. Y si un cliente que todavía no se actualizó lo
+      manda igual, el servidor lo IGNORA en silencio en vez de rechazar el
+      pago.
+
+      Rechazarlo sería castigar a un cliente viejo por mandar de más un dato
+      que ni siquiera se usa. Lo que no puede pasar es que se USE: un pago
+      atribuido a quien lo eligió en una pantalla, y no a quien tiene el
+      cliente, es exactamente la atribución cruzada que v0.33.2 midió y
+      corrigió en las solicitudes de crédito.
+
+    ★ QUÉ PASA SI EL CLIENTE NO TIENE VENDEDOR
+      400, nombrando al cliente. Es el único caso donde falta el dato de
+      verdad, y no se resuelve preguntándole a quien carga el pago: se
+      resuelve arreglando el cliente.
+
+    ★ TERCERA VEZ DE LA MISMA FORMA — SE AGREGA A LA REGLA GLOBAL 👤
+      · v0.33.2 — las solicitudes de crédito tomaban el vendedor del TOKEN
+        de quien cargaba. Se midieron solicitudes de clientes de los
+        vendedores 8 y 14 guardadas a nombre del 11, simplemente porque las
+        cargó él.
+      · v0.50.0 — los pedidos validaban contra la tabla de login en vez del
+        espejo de SAP, y dejaban 1.800 clientes sin poder recibir pedidos.
+      · v0.55.0 — los pagos obligaban a ELEGIR el vendedor en un selector.
+
+      Las tres son la misma pregunta contestada mal: **¿de dónde sale a
+      quién pertenece un documento?** La respuesta es siempre el CLIENTE, no
+      el token, no la tabla de login, y no lo que alguien eligió en una
+      pantalla.
+
+    ⚠️ LOS PEDIDOS SIGUEN COMO ESTÁN, Y ES DELIBERADO
+      `OrderCreate.salesperson_code` sigue siendo obligatorio para ADMIN.
+      No es una inconsistencia: un pedido SÍ puede ser tomado por un
+      vendedor distinto del asignado al cliente —SAP no lo impide y pasa en
+      la práctica—, mientras que un pago no. La regla la manda el negocio,
+      no la simetría del contrato.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.54.1 — LA OFICINA TAMBIÉN PUEDE DESCARTAR EL SUYO
@@ -9719,9 +9789,14 @@ paths:
       tags: [dispatch-admin]
       summary: Lista de vendedores (para atribuir un pago reportado desde el Dashboard)
       description: >
-        ★ v0.19.2 — REQUIERE ADMIN. Es la fuente de TODO selector de
-        PERTENENCIA: a qué vendedor pertenece un pago, de qué vendedor es un
-        pedido. Mismo patrón que /admin/drivers.
+        ★ v0.19.2 — REQUIERE ADMIN. Es la fuente de los selectores de
+        PERTENENCIA que quedan. Mismo patrón que /admin/drivers.
+
+        ⚠️ ★ v0.55.0 — YA NO ES EL SELECTOR DE "REPORTAR PAGO". Ese selector
+        desaparece: el vendedor de un pago se resuelve desde el cliente y
+        nadie lo elige. Hoy su uso real es el pedido creado por un ADMIN,
+        que es el único documento donde el negocio admite un vendedor
+        distinto del asignado al cliente.
 
         ★ CORREGIDO EN v0.50.0 — CAMBIA DE FUENTE. Devuelve los vendedores
         ACTIVOS del ESPEJO DE SAP (`SapSalespersons`), no las cuentas de
@@ -11915,15 +11990,16 @@ components:
           type: string
           format: uuid
           description: Identidad del pago, generada por la app. Hace el POST idempotente.
-        client_code: { type: string }
-        salesperson_code:
+        client_code:
           type: string
-          nullable: true
           description: >
-            ★ v0.19.1. Si el caller es VENDEDOR: se IGNORA cualquier valor
-            enviado — el servidor usa el código del propio vendedor
-            autenticado. Si el caller es ADMIN (Dashboard): OBLIGATORIO,
-            el usuario de oficina elige a qué vendedor atribuir el pago.
+            ★ v0.55.0 — De acá sale también A QUÉ VENDEDOR pertenece el pago.
+            El servidor lo resuelve desde el cliente, para todos los que
+            llaman.
+
+            Si el cliente no tiene vendedor asignado → 400, nombrándolo. Es
+            el único caso donde el dato falta de verdad, y no se arregla
+            preguntándole a quien carga el pago.
         amount: { type: number, format: double, minimum: 0.01 }
         method: { $ref: '#/components/schemas/AccountPaymentMethod' }
         payment_channel:
