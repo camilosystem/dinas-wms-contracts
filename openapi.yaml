@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.55.0
+  version: 0.56.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -121,6 +121,51 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.56.0 — ADMIN TAMBIÉN DECIDE SOBRE UN PAGO DE CARTERA
+    ══════════════════════════════════════════════════════════════════════════
+
+    ★ `approve` y `reject` DE PAGOS DE CARTERA ACEPTAN ADMIN
+      Pasan de `APROBADOR_PAGOS` a `APROBADOR_PAGOS o ADMIN`. Es un permiso
+      que se AGREGA: ningún rol pierde nada y ninguna forma cambia.
+
+    ★ POR QUÉ — ERA LA ÚNICA ASIMETRÍA DE SU CLASE, Y ESTÁ MEDIDA
+      Se revisaron los roles declarados de todos los endpoints de decisión
+      del contrato. El resultado:
+
+      · `/admin/account-payments/pending` y el detalle → ADMIN o APROBADOR_PAGOS
+      · los nueve endpoints de depósitos de oficina    → ADMIN o APROBADOR_PAGOS
+      · `/admin/credit-requests/.../approve`           → APROBADOR_CREDITOS o ADMIN
+      · `/admin/credit-requests/.../reject`            → APROBADOR_CREDITOS o ADMIN
+      · `/admin/credit-requests/.../retry`             → APROBADOR_CREDITOS o ADMIN
+      · `/admin/orders/{client_uuid}/approve` y reject → ADMIN
+      · `/admin/account-payments/.../approve` y reject → APROBADOR_PAGOS ← el único
+
+      O sea: este par era el ÚNICO lugar del contrato donde ADMIN podía VER
+      una bandeja completa, abrir el detalle, administrar los depósitos que
+      agrupan esos mismos pagos… y recibir 403 al confirmar. El bloque
+      simétrico —las solicitudes de crédito— ya aceptaba ADMIN desde su
+      primera versión.
+
+      Eso no es una separación de funciones diseñada: si lo fuera, ADMIN
+      tampoco vería la bandeja ni manejaría los depósitos. Es una asimetría
+      que quedó, y el síntoma con que se descubrió fue una persona con rol
+      ADMIN intentando aprobar y recibiendo un error donde esperaba trabajo.
+
+    ⚠️ LO QUE ESTE CAMBIO NO ARREGLA, Y HAY QUE SABERLO
+      `decided_by` guarda la CUENTA que decidió, no la persona. Si varias
+      personas comparten una cuenta de ADMIN, ese campo deja de identificar
+      a quién aprobó dinero real. La respuesta correcta es una cuenta por
+      cada persona que decide, no cerrar el rol — y el mismo riesgo ya
+      existía en las solicitudes de crédito, que aceptan ADMIN desde v0.18.0.
+
+    ⚠️ LO QUE ESTE CAMBIO NO EXPLICA
+      No cierra por sí solo el 404 que se reportó al aprobar un pago de
+      cartera. Un ADMIN llamando a `approve` recibía **403**, no 404 —
+      medido contra el proceso desplegado, con la ruta registrada y
+      respondiendo. Si el 404 vuelve a aparecer después de este cambio, la
+      causa es otra y sigue sin diagnosticar.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.55.0 — A QUIÉN PERTENECE UN PAGO LO DICE EL CLIENTE
@@ -5578,7 +5623,23 @@ paths:
       tags: [admin]
       summary: Aprobar (o modificar la imputación) de un pago de cartera
       description: >
-        ★ v0.17.0. REQUIERE rol APROBADOR_PAGOS.
+        ★ v0.17.0. ⚠️ SUPERADO POR v0.56.0: ~~REQUIERE rol APROBADOR_PAGOS.~~
+
+        ★ v0.56.0 — REQUIERE rol **APROBADOR_PAGOS o ADMIN**.
+
+        POR QUÉ CAMBIÓ: hasta v0.55.0 este par approve/reject era el ÚNICO
+        lugar del contrato donde ADMIN podía VER una bandeja y no podía
+        DECIDIR en ella. La bandeja `/admin/account-payments/pending` y el
+        detalle ya aceptaban ADMIN, los nueve endpoints de depósitos de
+        oficina también, y el bloque simétrico —las solicitudes de crédito—
+        acepta `APROBADOR_CREDITOS o ADMIN` en approve, reject y retry. Un
+        ADMIN abría el pago, veía todo, y recibía 403 al confirmar.
+
+        ⚠️ LO QUE NO ARREGLA: `decided_by` guarda la CUENTA, no la persona.
+        Con una cuenta de ADMIN compartida, ese campo deja de decir quién
+        aprobó el dinero. Se resuelve con una cuenta por persona que decide,
+        no restringiendo el rol.
+
         El aprobador puede CONFIRMAR la imputación propuesta o REEMPLAZARLA
         con `applications` editado. Si la suma de `applications` no cubre el
         `amount` total, el sobrante queda como PAGO_A_CUENTA (sin aplicar, no
@@ -5613,7 +5674,12 @@ paths:
     post:
       tags: [admin]
       summary: Rechazar un pago de cartera reportado
-      description: ★ v0.17.0. REQUIERE rol APROBADOR_PAGOS. Motivo obligatorio.
+      description: >
+        ★ v0.17.0. ⚠️ SUPERADO POR v0.56.0: ~~REQUIERE rol APROBADOR_PAGOS.~~
+
+        ★ v0.56.0 — REQUIERE rol **APROBADOR_PAGOS o ADMIN**, por la misma
+        razón que el `approve` de esta misma pareja: el porqué completo está
+        en la descripción de ese endpoint. Motivo obligatorio.
       parameters:
         - name: payment_uuid
           in: path
