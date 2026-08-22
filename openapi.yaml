@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.56.0
+  version: 0.57.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -121,6 +121,50 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.57.0 — EL NOMBRE DEL VENDEDOR EN LAS ÓRDENES (D5)
+    ══════════════════════════════════════════════════════════════════════════
+
+    ★ `OrderSummary.salesperson_name` — NUEVO, nullable
+      Las vistas de órdenes del Dashboard mostraban el CÓDIGO del vendedor y
+      nada más. Quien mira una grilla de órdenes no reconoce a un vendedor
+      por el número 11.
+
+      El campo se resuelve en el servidor desde el espejo de vendedores de
+      SAP, igual que `AdminClient.salesperson_name` desde v0.42.0.
+
+    ★ UN SOLO LUGAR CUBRE LAS TRES VISTAS QUE PEDÍA D5, Y ESO ESTÁ MEDIDO
+      D5 pide el nombre en la grilla, en el detalle y en los retenidos. Se
+      verificó cómo están construidos los tres:
+
+        · GET /admin/orders          → OrderSummary
+        · GET /admin/orders/{...}    → OrderDetail = allOf[OrderSummary, …]
+        · GET /admin/orders/held     → HeldOrder   = allOf[OrderSummary, …]
+
+      Los dos últimos COMPONEN `OrderSummary`, así que agregar el campo una
+      vez lo pone en los tres. No hay un segundo lado que se pueda olvidar
+      —que es exactamente la forma de los tres huecos de v0.30.0 y v0.31.0—
+      y no se pudo olvidar porque la estructura no lo permite, no porque
+      alguien se acordó.
+
+      Efecto colateral y deliberado: también lo reciben `GET /my-orders` y
+      `GET /admin/trucks/available-orders`, que devuelven el mismo schema. Es
+      un campo nullable que se agrega; no cambia ninguna forma existente ni
+      obliga a ningún cliente a hacer nada.
+
+    ★ EL NOMBRE SALE DEL ESPEJO DE SAP, NO DE LA TABLA DE LOGIN
+      Es la regla global 👤 aplicada a un caso de LECTURA. La tabla de
+      cuentas solo responde quién puede ENTRAR. En dev hay 19 vendedores
+      activos en SAP y 3 con cuenta: resolver el nombre contra el login
+      dejaría el 84% de las órdenes sin nombre, y lo dejaría vacío de una
+      forma que se lee como "no tiene vendedor" en vez de "no tiene cuenta".
+
+    ⚠️ NULL NO ES CADENA VACÍA NI ES UN GUION
+      `null` significa que el código no corresponde a ningún vendedor del
+      espejo — un código huérfano, que es un dato. La pantalla muestra el
+      código en ese caso. Rellenarlo con "—" o con "" convertiría un hecho
+      del dato en ruido de presentación, y nadie volvería a notarlo.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.56.0 — ADMIN TAMBIÉN DECIDE SOBRE UN PAGO DE CARTERA
@@ -15196,6 +15240,34 @@ components:
         client_uuid: { type: string, format: uuid }
         order_number: { type: string }
         salesperson_code: { type: string }
+        salesperson_name:
+          type: string
+          nullable: true
+          description: >
+            ★ NUEVO en v0.57.0. El nombre del vendedor de la orden, resuelto
+            por el servidor desde el ESPEJO DE VENDEDORES DE SAP
+            (`SapSalespersons`) — el mismo `display_name` que devuelven
+            `/admin/salespersons` y `/admin/sap-salespersons`, y el mismo
+            criterio que `AdminClient.salesperson_name` desde v0.42.0.
+
+            ⚠️ SE RESUELVE CONTRA EL ESPEJO DE SAP, NUNCA CONTRA LA TABLA DE
+            CUENTAS DE LOGIN. Es la regla global 👤: un `salesperson_code` es
+            un hecho de SAP y una cuenta de login es un hecho del WMS. En dev
+            hay 19 vendedores activos en SAP y solo 3 con cuenta — resolver
+            el nombre contra la tabla de login dejaría en blanco el 84% de
+            las órdenes, y peor, lo dejaría en blanco de una forma que se lee
+            como "no tiene vendedor".
+
+            `null` cuando el código no corresponde a ningún vendedor del
+            espejo. Eso es un dato en sí mismo —un código que quedó
+            huérfano— y no un error de la pantalla: se muestra el código,
+            nunca un guion ni una cadena vacía.
+
+            POR QUÉ VIAJA RESUELTO Y NO SE CRUZA EN EL CLIENTE: para que
+            ninguna pantalla tenga que pedir dos listas para mostrar un
+            nombre. Es la misma decisión que se tomó para `client_name`,
+            `shipping_code_name` y `shipping_route_name`, que ya viajan así
+            en este mismo schema.
         client_code: { type: string }
         client_name: { type: string }
         taken_at:
