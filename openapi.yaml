@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.60.0
+  version: 0.61.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -121,6 +121,50 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.61.0 — EL CENTINELA SE ESCAPABA POR `/admin/clients`
+    ══════════════════════════════════════════════════════════════════════════
+
+    ★ `AdminClient.salesperson_code` PASA A NULLABLE
+      Se declaraba siempre presente y el servidor devolvía `"-1"`. La grilla
+      de clientes del Dashboard mostraba ese `-1` como si fuera el código de
+      un vendedor, y junto a él el nombre `-No Sales Employee / Buyer-` como
+      si fuera el nombre de una persona.
+
+    ★ CÓMO APARECIÓ: LA GUARDA DE v0.60.0 LO ENCONTRÓ AL PRIMER INTENTO
+      La guarda que se pidió para que un `-1` crudo no se escapara hacia una
+      respuesta de la API no era preventiva: había una fuga viva. Vale
+      anotarlo, porque el Arquitecto la pidió como red de seguridad para el
+      futuro y resultó ser un detector de un problema presente.
+
+    ★ Y DEBAJO HABÍA UN COMENTARIO QUE MENTÍA
+      v0.42.1 cambió `AdminClient.salesperson_name` para leerlo de la columna
+      del espejo del CLIENTE en vez del espejo de VENDEDORES, con este motivo
+      escrito al lado: *"del espejo del cliente… Null si el codigo no resuelve
+      en OSLP"*. Ese "porque" es falso y está medido: SAP no pone null ahí,
+      pone texto. El comentario sobrevivió dos versiones y arrastró el
+      comportamiento con él, porque le ahorró al siguiente lector el trabajo
+      de verificar. Es exactamente el motivo por el que en este proyecto un
+      "porque" que no se puede demostrar no se escribe.
+
+    ⚠️ LA NOTA DE ASIMETRÍA DE v0.58.0 QUEDA SUPERADA, NO BORRADA
+      Decía que `AdminClient.salesperson_code` no era nullable porque prever
+      un nulo que no ocurre hace escribir una rama muerta. El nulo SÍ ocurre
+      —5 clientes reales—; solo que se expresaba como `-1` y por eso nadie lo
+      veía. La justificación era razonable y era falsa, y los datos la
+      desmintieron.
+
+    ★ LA ASIMETRÍA QUE SÍ EXISTE, escrita en su lugar
+      Los schemas del CLIENTE llevan el código nullable, porque un cliente
+      puede no tener vendedor. Los schemas de un DOCUMENTO lo llevan
+      obligatorio, porque un documento de un cliente sin vendedor no debería
+      poder existir — la creación se rechaza antes con 400.
+
+      ⚠️ ESA SEGUNDA MITAD ESTÁ RAZONADA Y NO MEDIDA para órdenes y
+      solicitudes de crédito: se comprobó para pagos. Si se encuentra una
+      orden o una solicitud de un cliente sin vendedor, esta frase es la que
+      hay que corregir, no el dato.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.60.0 — EL NULL DE `salesperson_code` NO SALE DE UN NULL
@@ -14911,10 +14955,26 @@ components:
             No se resuelve preguntándole a quien carga el pago: se resuelve
             arreglando el cliente en SAP.
 
-            Nota de asimetría, deliberada: `AdminClient.salesperson_code` NO
-            es nullable. Acá sí, porque el error no es simétrico — prever un
-            nulo que no ocurre hace que el cliente escriba una rama que no
-            se ejecuta; no preverlo rompe con un dato real.
+            ⚠️ SUPERADO POR v0.61.0: ~~Nota de asimetría, deliberada:
+            `AdminClient.salesperson_code` NO es nullable. Acá sí, porque el
+            error no es simétrico — prever un nulo que no ocurre hace que el
+            cliente escriba una rama que no se ejecuta; no preverlo rompe con
+            un dato real.~~
+
+            ★ v0.61.0 — ESA JUSTIFICACIÓN ERA FALSA Y LOS DATOS LA
+            DESMINTIERON. El nulo SÍ ocurre: son 5 clientes reales. Lo que
+            pasaba no era que no hubiera nulo, sino que se expresaba como
+            `-1` y por eso nadie lo veía. `AdminClient.salesperson_code`
+            pasa a nullable en v0.61.0 y la asimetría desaparece.
+
+            LA ASIMETRÍA QUE SÍ ES REAL, y es otra: los schemas del CLIENTE
+            —`AdminClient`, `ClientStatement`— llevan el código nullable,
+            porque un cliente puede no tener vendedor. Los schemas de un
+            DOCUMENTO —`PendingAccountPayment`, `PendingCreditRequest`,
+            `OrderSummary`— lo llevan obligatorio, porque un documento de un
+            cliente sin vendedor no debería poder existir: la creación se
+            rechaza antes. Esa es la línea, y no es la que decía la nota
+            vieja.
 
             ★ v0.60.0 — DE DÓNDE SALE ESE NULL, porque no sale de un NULL.
             En el espejo, `Clients.SalespersonCode` es `int NOT NULL`: un
@@ -15992,7 +16052,28 @@ components:
 
             El rótulo en pantalla tiene que decir para qué es la zona —
             "zona de reparto"— y nunca "zona" a secas.
-        salesperson_code: { type: string }
+        salesperson_code:
+          type: string
+          nullable: true
+          description: >
+            ★ v0.61.0 — PASA A NULLABLE. Antes se declaraba siempre presente
+            y el servidor devolvía literalmente `"-1"`.
+
+            `null` = el cliente NO TIENE VENDEDOR ASIGNADO. En el espejo eso
+            se guarda con el centinela **-1** (ver
+            `ClientStatement.salesperson_code`), y el servidor lo traduce a
+            `null` al leer, igual que en el estado de cuenta.
+
+            MEDIDO en dev el 22-ago-2026: son 5 clientes, y son los mismos 5
+            que no pueden recibir un pago. `GET /admin/clients` venía
+            devolviendo `"-1"` para ellos y la grilla del Dashboard lo
+            mostraba como si fuera el código de un vendedor.
+
+            ⚠️ POR QUÉ SE CIERRA ACÁ Y NO SE LE PIDE AL CLIENTE QUE
+            INTERPRETE -1: un centinela de SAP que llega hasta la pantalla
+            obliga a CADA consumidor a conocerlo, y basta que uno no lo
+            conozca para que muestre un vendedor que no existe. Traducirlo en
+            un solo lugar es exactamente para lo que existe este middleware.
         salesperson_name:
           type: string
           nullable: true
