@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.66.0
+  version: 0.67.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -121,6 +121,43 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.67.0 — LA FOTO DEL RETORNO PASA A OPCIONAL (Dr3)
+    ══════════════════════════════════════════════════════════════════════════
+
+    ★ `photo_base64` SALE DE `required` EN `POST /dispatch/returns`
+      Sigue aceptándose igual y los retornos que la llevan no cambian en
+      nada. Lo que cambia es que un retorno SIN foto ahora entra.
+
+    ★ LA RAZÓN ES DE LA CALLE, NO DEL DATO
+      Un driver detenido frente al cliente porque la cámara no responde,
+      porque no hay luz o porque el teléfono se quedó sin espacio es peor que
+      una devolución sin foto. Bloquear la operación para conservar la
+      evidencia terminaba perdiendo las dos: ni foto ni retorno, y el cliente
+      esperando.
+
+    ★ LO QUE HACE SEGURO RELAJARLO: LA AUSENCIA YA ERA VISIBLE
+      `ProductReturn.has_photo` existe desde antes de este cambio. Deja de
+      ser "siempre true" y pasa a ser el único lugar donde se ve qué retornos
+      entraron sin evidencia — el Dashboard puede listarlos y perseguirlos.
+
+      Relajar una obligación sin dejar rastro de cuándo no se cumplió sería
+      cambiar un problema visible por uno silencioso. Acá el rastro ya
+      estaba, y por eso este cambio se puede hacer sin inventar nada nuevo.
+
+    ⚠️ `has_photo: false` NO ES UN ERROR
+      Es un retorno que el driver registró sin poder sacar la foto. La
+      pantalla lo dice con esas palabras y permite el seguimiento; no lo
+      esconde ni lo muestra igual que a los demás. Es la misma regla de
+      siempre: null y vacío no significan lo mismo, y un hecho del dato no se
+      disfraza de ruido de presentación.
+
+    ★ QUÉ TIENE QUE CAMBIAR DE CADA LADO
+      · middleware — aceptar la ausencia y guardar `has_photo = false`.
+      · app-driver — dejar registrar el retorno sin foto, sin esconder el
+        botón de tomarla; la foto sigue siendo el camino normal.
+      · Dashboard  — distinguir en pantalla los retornos sin evidencia.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.66.0 — …Y TAMBIÉN DE QUIÉN PREGUNTA
@@ -10859,18 +10896,19 @@ paths:
         Reglas:
           · El `client_code` debe ser de una parada de SU ruta → 400 si no.
           · Al menos un ítem, cada uno con cantidad > 0 y motivo.
-          · La FOTO es OBLIGATORIA (base64, ya redimensionada por la app).
+          · ⚠️ SUPERADO POR v0.67.0: ~~La FOTO es OBLIGATORIA~~ — ahora es
+            OPCIONAL. Ver `photo_base64`.
           · `occurred_at` = la hora real de la visita (clave para el offline).
 
-        La app manda todo en UNA petición: o entra el retorno completo con su
-        evidencia, o no entra.
+        La app manda todo en UNA petición: el retorno entra completo, con su
+        evidencia si la hay.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [return_uuid, client_code, items, photo_base64]
+              required: [return_uuid, client_code, items]
               properties:
                 return_uuid:
                   type: string
@@ -10901,10 +10939,34 @@ paths:
                       reason: { $ref: '#/components/schemas/ProductReturnReason' }
                 photo_base64:
                   type: string
+                  nullable: true
                   description: >
                     La foto en base64, SIN el prefijo data-uri. La app la
                     redimensiona antes (~1024px, calidad ~70%) para que pese
-                    150-300KB. OBLIGATORIA.
+                    150-300KB.
+
+                    ⚠️ ★ v0.67.0 — PASA DE OBLIGATORIA A OPCIONAL (Dr3).
+                    ~~OBLIGATORIA.~~
+
+                    POR QUÉ, y la razón es de la calle y no del dato: un
+                    driver detenido frente al cliente porque la cámara no
+                    responde, porque no hay luz o porque el teléfono se quedó
+                    sin espacio es PEOR que una devolución sin foto. El
+                    retorno tiene que poder entrar igual. Bloquear la
+                    operación para conservar la evidencia terminaba
+                    perdiendo las dos: ni foto ni retorno.
+
+                    ⚠️ LA AUSENCIA NO SE VUELVE INVISIBLE, Y ESO ES LO QUE
+                    HACE SEGURO EL CAMBIO. `ProductReturn.has_photo` dice
+                    cuáles no la tienen, así que el Dashboard puede
+                    mostrarlas y perseguirlas. Relajar una obligación sin
+                    dejar rastro de cuándo no se cumplió sería cambiar un
+                    problema visible por uno silencioso; acá el rastro ya
+                    existía.
+
+                    Lo que NO cambia: los retornos que SÍ la llevan siguen
+                    igual, con la misma ruta de lectura y el mismo
+                    almacenamiento.
                 note: { type: string, nullable: true }
                 occurred_at:
                   type: string
@@ -14435,8 +14497,18 @@ components:
         has_photo:
           type: boolean
           description: >
-            Siempre true (la foto es obligatoria), pero se expone para que el
-            Dashboard sepa si puede pedirla.
+            ⚠️ SUPERADO POR v0.67.0: ~~Siempre true (la foto es
+            obligatoria), pero se expone para que el Dashboard sepa si puede
+            pedirla.~~
+
+            ★ v0.67.0 — YA NO ES SIEMPRE TRUE, y ese es justamente su valor
+            ahora. Desde que la foto es opcional (Dr3), este campo es el
+            único lugar donde se ve qué retornos entraron sin evidencia.
+
+            `false` NO es un error ni un dato que no se pudo leer: es un
+            retorno que el driver registró sin poder sacar la foto. La
+            pantalla lo dice con esas palabras y deja pedir el seguimiento;
+            no lo esconde ni lo pinta como si fuera igual a los demás.
         photo_url:
           type: string
           nullable: true
