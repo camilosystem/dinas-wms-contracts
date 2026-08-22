@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.62.0
+  version: 0.63.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -121,6 +121,42 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.63.0 — EL VENDEDOR VE LA ZONA DE REPARTO (V3)
+    ══════════════════════════════════════════════════════════════════════════
+
+    ★ `Client` gana los TRES campos de zona que le faltaban
+      `shipping_code`, `shipping_code_name` y `shipping_route_name`, los tres
+      nullable. Con eso el payload que lee la app de vendedores queda con los
+      mismos cuatro campos de zona que `AdminClient` y `OrderSummary` tienen
+      desde v0.42.x. Era el único de los tres que llevaba uno solo.
+
+    ★ LO QUE PEDÍA V3 ERA UNO; HACÍAN FALTA TRES, Y ESO ESTÁ MEDIDO
+      V3 pedía que el vendedor viera la zona de REPARTO, o sea
+      `shipping_code` + su nombre. Pero `Client` traía `shipping_route` como
+      CÓDIGO CRUDO y sin nombre, así que agregar solo el eje de reparto
+      habría dejado una pantalla con una zona por su nombre y la otra por su
+      código — otra forma de la misma confusión. Va también
+      `shipping_route_name`.
+
+    🔴 Y LA CAUSA DE LA ETIQUETA MAL PUESTA ESTABA EN EL CONTRATO
+      `Client.shipping_route` se describía como *"Código de ruta/día de
+      ENTREGA"*. Es falso: `shipping_route` es la zona de VISITA del
+      vendedor. De ahí salió que la app rotulara ese campo como "ruta de
+      reparto" — nadie lo leyó mal, el contrato lo enseñaba mal. La frase
+      queda tachada, no borrada.
+
+      Es la segunda vez en esta sesión que un texto equivocado sobrevive
+      versiones arrastrando el comportamiento con él. La primera fue el
+      comentario de v0.42.1 sobre de dónde sale el nombre del vendedor.
+
+    ★ LA REGLA, ESCRITA DONDE LA LEE QUIEN LA NECESITA
+      Los dos ejes son zonas y lo que las separa es PARA QUÉ:
+      `shipping_code` es la del CAMIÓN QUE ENTREGA, `shipping_route` la de la
+      PERSONA QUE VENDE. Un cliente puede estar en una y ser visitado desde
+      la otra. El rótulo en pantalla tiene que decir para qué es la zona, y
+      nunca "zona" a secas — es exactamente así como se confundieron.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.62.0 — DE DÓNDE SALE LA PERTENENCIA, MEDIDO
@@ -14887,13 +14923,76 @@ components:
           type: string
           nullable: true
           description: >
-            Código de ruta/día de entrega (de OCRD.U_RSAP_ROUTE).
+            ⚠️ SUPERADO POR v0.63.0: ~~Código de ruta/día de entrega (de
+            OCRD.U_RSAP_ROUTE).~~ Esa frase era FALSA y estuvo acá desde el
+            principio: llamaba "entrega" a la zona de VISITA, y de ahí salió
+            que la app de vendedores rotulara este campo como "ruta de
+            reparto". No lo leyó mal nadie — el contrato lo enseñaba mal.
+
+            ★ v0.63.0 — Es el código de la ZONA DE VISITA DEL VENDEDOR (de
+            `OCRD.U_RSAP_ROUTE`). Es la zona de la PERSONA QUE VENDE, no la
+            del camión que entrega. Su nombre legible es
+            `shipping_route_name`.
+
+            ⚠️ LOS DOS EJES SON DISTINTOS Y NO SE MEZCLAN NUNCA. Un cliente
+            puede estar en una zona de reparto y ser visitado por un vendedor
+            de otra. El rótulo en pantalla tiene que decir PARA QUÉ es la
+            zona —"zona de visita"— y nunca "zona" a secas: es exactamente
+            así como se confundieron las dos.
 
             ★ v0.48.0 — NULLABLE. Null significa que el cliente NO TIENE
             zona asignada — un hueco real de datos maestros, no un dato que
             no se pudo leer. La pantalla debe decirlo con esas palabras, no
             dejar la celda en blanco: una celda vacía se lee como un
             problema de la pantalla.
+        shipping_route_name:
+          type: string
+          nullable: true
+          description: >
+            ★ NUEVO en v0.63.0. El nombre legible de `shipping_route` — la
+            zona de VISITA del vendedor (Bronx y Manhtt, Queens Retail, Long
+            Island…), de la tabla de usuario `@RSAP_ROUTE`. Mismo campo que
+            `AdminClient.shipping_route_name` desde v0.42.2.
+
+            Viaja resuelto para que la app no tenga que cruzar dos listas, y
+            para que no muestre un código crudo al lado de una zona con
+            nombre — mostrar un eje por su nombre y el otro por su código es
+            otra forma de la misma confusión.
+
+            ⚠️ Cuatro de las catorce zonas NO son lugares (Admon, Aliados,
+            Sales Manager, Telemarketing), y dos que sí lo parecen están
+            partidas por canal y no por geografía (Queens foodservices contra
+            Queens Retail). Es clasificación COMERCIAL: no la uses para nada
+            que dependa de dónde queda el cliente.
+
+            `null` cuando el cliente no tiene zona de visita asignada.
+        shipping_code:
+          type: integer
+          nullable: true
+          description: >
+            ★ NUEVO en v0.63.0 — ES LO QUE PEDÍA V3. El código de la ZONA DE
+            REPARTO: la del CAMIÓN QUE ENTREGA. Mismo campo que
+            `AdminClient.shipping_code` y `OrderSummary.shipping_code`.
+
+            POR QUÉ FALTABA Y POR QUÉ IMPORTA: el payload que lee la app de
+            vendedores no traía este eje en absoluto. Traía solo
+            `shipping_route` —la zona de VISITA— y la app lo mostraba
+            rotulado como zona de reparto. O sea que el vendedor venía viendo
+            un dato real con el nombre del otro, que es peor que no verlo.
+
+            `null` cuando el cliente no tiene zona de reparto asignada. En
+            dev son 16 sobre 2.638, y siguen en el catálogo a propósito.
+        shipping_code_name:
+          type: string
+          nullable: true
+          description: >
+            ★ NUEVO en v0.63.0. El nombre legible de la zona de REPARTO
+            (BNX3, BRK1, QNS2). Mismo campo que
+            `AdminClient.shipping_code_name` desde v0.42.0.
+
+            ⚠️ Es el nombre de `shipping_code`, NUNCA de `shipping_route`.
+            El rótulo en pantalla tiene que decir "zona de reparto", nunca
+            "zona" a secas.
         default_price_list: { $ref: '#/components/schemas/PriceListNumber' }
         authorized_price_lists:
           type: array
