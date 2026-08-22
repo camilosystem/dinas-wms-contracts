@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.63.0
+  version: 0.64.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -121,6 +121,43 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.64.0 — CADA FRASE DE NULO NOMBRA SU EJE
+    ══════════════════════════════════════════════════════════════════════════
+
+    Solo texto. Corrige v0.63.0, publicada hace una hora, y la corrección
+    salió de auditar el propio texto contra la instrucción que se le había
+    dado al agente.
+
+    ★ EL PROBLEMA
+      Al agente de app-sales se le indicó que cada fila nombrara su eje —"sin
+      zona de reparto asignada" contra "sin zona de visita asignada"— y que
+      usara las palabras exactas del contrato. Las dos cosas se
+      contradecían: la frase de nulo de `shipping_route` venía de v0.48.0
+      diciendo *"el cliente NO TIENE zona asignada"*, sin nombrar el eje,
+      porque cuando se escribió este schema llevaba un solo eje. Y
+      `shipping_code_name` no tenía frase de nulo en absoluto.
+
+      Siguiendo el contrato al pie de la letra, la app habría escrito el
+      texto ambiguo que se le pidió evitar. **El contrato le habría ganado a
+      la instrucción**, que es como debe ser — y por eso el que tenía que
+      cambiar era el contrato.
+
+    ★ LO QUE CAMBIA
+      · `Client.shipping_route` — el nulo dice **zona de visita**, no "zona".
+      · `Client.shipping_code_name` — gana su frase de nulo, con su eje.
+      · Los dos ejes tienen prohibido compartir el texto del nulo, escrito
+        como regla y no como recomendación.
+      · Y se escribe que la fila queda VISIBLE: esconderla es peor que
+        dejarla en blanco. Una celda vacía contesta mal la pregunta; una fila
+        ausente la borra.
+
+    ★ LOS DOS HUECOS SON DISTINTOS, Y ESTÁN MEDIDOS
+      5 clientes sin zona de visita y 16 sin zona de reparto, sobre 2.638.
+      Distinto tamaño, distinto registro de SAP donde se arreglan. Un mismo
+      mensaje para los dos los vuelve a fundir justo donde este contrato los
+      separa.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.63.0 — EL VENDEDOR VE LA ZONA DE REPARTO (V3)
@@ -14940,11 +14977,24 @@ components:
             zona —"zona de visita"— y nunca "zona" a secas: es exactamente
             así como se confundieron las dos.
 
-            ★ v0.48.0 — NULLABLE. Null significa que el cliente NO TIENE
-            zona asignada — un hueco real de datos maestros, no un dato que
-            no se pudo leer. La pantalla debe decirlo con esas palabras, no
-            dejar la celda en blanco: una celda vacía se lee como un
-            problema de la pantalla.
+            ★ v0.48.0, ⚠️ PRECISADO EN v0.64.0 — NULLABLE. Null significa
+            que el cliente NO TIENE **zona de visita** asignada (~~"zona
+            asignada" a secas~~, que era como lo decía v0.48.0, cuando este
+            era el único eje que viajaba en este schema). Es un hueco real de
+            datos maestros, no un dato que no se pudo leer.
+
+            La pantalla debe decirlo con esas palabras y NOMBRANDO EL EJE
+            —"sin zona de visita asignada"—, no dejar la celda en blanco ni
+            esconder la fila. Una celda vacía se lee como un problema de la
+            pantalla; una fila ausente se lee como que ese cliente no tiene
+            ese concepto, que es peor: la celda vacía contesta mal, la fila
+            escondida borra la pregunta.
+
+            ⚠️ Y NO COMPARTE TEXTO CON EL OTRO EJE. Un mismo mensaje para los
+            dos vuelve a fundirlos justo en el lugar donde el contrato los
+            separa. En dev son 5 clientes sin zona de visita y 16 sin zona de
+            reparto: son huecos distintos, de tamaños distintos, y se
+            arreglan en registros distintos de SAP.
         shipping_route_name:
           type: string
           nullable: true
@@ -14993,6 +15043,11 @@ components:
             ⚠️ Es el nombre de `shipping_code`, NUNCA de `shipping_route`.
             El rótulo en pantalla tiene que decir "zona de reparto", nunca
             "zona" a secas.
+
+            ★ v0.64.0 — `null` cuando el cliente no tiene zona de reparto
+            asignada, que en dev son 16 sobre 2.638. La pantalla lo dice
+            nombrando el eje —"sin zona de reparto asignada"— y la fila
+            queda visible igual.
         default_price_list: { $ref: '#/components/schemas/PriceListNumber' }
         authorized_price_lists:
           type: array
