@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.58.0
+  version: 0.59.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -121,6 +121,52 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.59.0 — `image_url` ES RELATIVA Y PEDIRLA EXIGE EL TOKEN
+    ══════════════════════════════════════════════════════════════════════════
+
+    Solo texto: ningún campo cambia de forma, ningún endpoint cambia de
+    comportamiento. Lo que cambia es lo que el contrato DICE, porque lo que
+    decía se podía leer al revés y alguien ya lo leyó al revés.
+
+    ★ QUÉ FALTABA
+      `CatalogItem.image_url` decía "trátala como opaca" y la ruta
+      `/catalog-images/{image_id}` decía "úsala tal como viene en el ítem".
+      Ninguna de las dos decía las dos cosas que un cliente necesita saber
+      para que la foto cargue: que el valor es una ruta RELATIVA que hay que
+      resolver contra la base con prefijo `/v1`, y que esa puerta exige la
+      cabecera `Authorization` igual que el resto de la API.
+
+    ★ POR QUÉ IMPORTA MÁS DE LO QUE PARECE
+      Un componente de imagen corriente no hace ninguna de las dos cosas: ni
+      antepone la base ni manda cabeceras. Y el fallo NO se ve como un error
+      de autorización — se ve como "este ítem no tiene foto", porque el
+      placeholder del caso legítimo (`image_url` en null) es idéntico al de
+      la descarga rechazada. Un 401 disfrazado de dato ausente.
+
+      MEDIDO en dev el 22-ago-2026 desde app-sales: con `/v1` y Bearer da 200
+      con `image/png`; sin token, 401; sin `/v1`, 404. Los tres indistinguibles
+      desde una vista que solo sabe mostrar o no mostrar una foto. Costó una
+      sesión de depuración en app-sales, y el Dashboard y las otras dos apps
+      consumen el mismo campo.
+
+    ★ EL ALCANCE DE "OPACA", PRECISADO
+      Vale para su CONTENIDO —no la construyas ni la parsees— y no significa
+      que se pueda entregar tal cual a cualquier cargador de imágenes. La
+      frase vieja queda tachada en el campo, no borrada: alguien va a leer la
+      versión vieja y tiene que saber que ya no rige sola.
+
+    ★ BARRIDO DE VOSEO
+      El contrato tenía cuatro formas voseantes en descripciones: una en la
+      ruta de imágenes, dos en los campos `image_url`, y una en un ejemplo
+      entre comillas del bloque de faltantes. Corregidas. El registro del
+      proyecto es español neutro, y el contrato es texto generado como
+      cualquier otro.
+
+      Y NO SE CITAN AQUÍ A PROPÓSITO: escribirlas para nombrarlas dejaría el
+      barrido en rojo permanente sobre su propio changelog, y una alarma que
+      suena siempre deja de leerse.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.58.0 — EL VENDEDOR TAMBIÉN EN EL ESTADO DE CUENTA (D4)
@@ -785,7 +831,7 @@ info:
       · `pallets: []` — se repartió y de este ítem NO viajó nada. Pasa
         cuando hubo faltante y no se recogió ninguna unidad.
 
-      Son dos situaciones distintas para quien lee: una es "esperá", la
+      Son dos situaciones distintas para quien lee: una es "espera", la
       otra es "este ítem no va". Tratar las dos igual es exactamente el
       error que este proyecto ya pagó varias veces con listas vacías.
 
@@ -7302,10 +7348,16 @@ paths:
         imagen del catálogo. Es el mismo mecanismo de almacenamiento, con
         otra puerta.
 
-        ⚠️ NO CONSTRUYAS ESTA URL. Usá `image_url` tal como viene en el ítem:
+        ⚠️ NO CONSTRUYAS ESTA URL. Usa `image_url` tal como viene en el ítem:
         lleva una versión derivada del contenido normalizado y cambia cuando
         cambia la imagen, que es lo que hace que un cliente con el catálogo
         cacheado traiga la foto nueva.
+
+        ⚠️ ★ v0.59.0 — "TAL COMO VIENE" NO SIGNIFICA "ENTRÉGALA A UN
+        CARGADOR DE IMÁGENES". El valor es una ruta RELATIVA y esta puerta
+        exige el mismo token que el resto de la API: hay que resolverla
+        contra la misma base con prefijo `/v1` y mandar la cabecera
+        `Authorization`. Ver `CatalogItem.image_url` para la medición.
       parameters:
         - name: image_id
           in: path
@@ -14642,7 +14694,31 @@ components:
             ★ v0.41.0 — CAMBIA cuando cambia la imagen: lleva una versión
             derivada del contenido, para que un cliente que guardó el
             catálogo sin conexión traiga la nueva foto en vez de quedarse con
-            la cacheada. Tratala como OPACA.
+            la cacheada. Trátala como OPACA.
+
+            ⚠️ ★ NUEVO en v0.59.0 — ES UNA RUTA RELATIVA, Y PEDIRLA EXIGE EL
+            MISMO TOKEN QUE EL RESTO DE LA API. Viene como
+            `/catalog-images/{id}`, sin esquema ni host: hay que resolverla
+            contra la MISMA base con prefijo `/v1` que usa cualquier otra
+            llamada, y mandar la cabecera `Authorization`.
+
+            POR QUÉ SE ESCRIBE: un componente de imagen corriente —el
+            `AsyncImage` de SwiftUI, un `<img src>` del navegador— no hace
+            ninguna de las dos cosas. No antepone la base y no manda
+            cabeceras. La imagen entonces no carga NUNCA, y el fallo se ve
+            como "este ítem no tiene foto" en vez de como un 401: el
+            placeholder del caso legítimo —`image_url` en null— es idéntico
+            al de la descarga rechazada.
+
+            MEDIDO contra dev el 22-ago-2026: con la base `/v1` y el Bearer
+            devuelve 200 con `image/png`; sin el token, 401; sin el prefijo
+            `/v1`, 404. Los tres se ven igual desde una vista que solo sabe
+            mostrar o no mostrar una foto.
+
+            ⚠️ SUPERADO POR v0.59.0 el alcance de "trátala como opaca": vale
+            para su CONTENIDO —no la construyas ni la parsees— y NO significa
+            que se pueda entregar tal cual a cualquier cargador de imágenes.
+            Esa lectura costó una sesión de depuración en app-sales.
 
             `null` mientras el ítem no tenga imagen cargada: el cliente
             muestra su placeholder, que es el estado real del dato y no un
@@ -15726,8 +15802,15 @@ components:
 
             ★ v0.41.0 — CAMBIA cuando cambia la imagen: lleva una versión
             derivada del contenido, para que un cliente que la haya cacheado
-            traiga la nueva. Tratala como OPACA: no la construyas ni la
+            traiga la nueva. Trátala como OPACA: no la construyas ni la
             parsees.
+
+            ⚠️ ★ NUEVO en v0.59.0 — MISMA REGLA QUE EN `CatalogItem`: es una
+            ruta RELATIVA y pedirla exige el token. El Dashboard tiene que
+            resolverla contra su base con `/v1` y mandar `Authorization`; un
+            `<img src>` con el valor crudo no carga nunca y se ve igual que
+            un ítem sin foto. El porqué completo y la medición están en
+            `CatalogItem.image_url`.
 
             Estaba solo en el schema de las apps, así que la pantalla del
             Dashboard desde donde se van a administrar las imágenes no podía
