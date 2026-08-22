@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.61.0
+  version: 0.62.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -121,6 +121,49 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.62.0 — DE DÓNDE SALE LA PERTENENCIA, MEDIDO
+    ══════════════════════════════════════════════════════════════════════════
+
+    Solo texto. Corrige una frase de v0.61.0 que la medición desmintió.
+
+    ★ LO QUE DECÍA v0.61.0
+      Que la línea era CLIENTE contra DOCUMENTO: el cliente puede no tener
+      vendedor, un documento de un cliente así no debería poder existir. La
+      propia versión avisaba que esa segunda mitad estaba razonada y no
+      medida para pedidos y créditos.
+
+    ★ LO QUE DIO LA MEDICIÓN
+      · pago de cartera      → rechazado con 400
+      · solicitud de crédito → rechazada con 400
+      · **pedido            → SE CREA**
+
+    ★ LA LÍNEA REAL: DE DÓNDE SALE LA PERTENENCIA
+      No es cliente contra documento. Es documentos cuya pertenencia SALE DEL
+      CLIENTE (pago, crédito) contra documentos cuya pertenencia SE ELIGE
+      (pedido).
+
+      Y no es un olvido del código: es la excepción de negocio que la regla
+      global 👤 ya tenía escrita — un pedido SÍ puede tomarlo un vendedor
+      distinto del asignado al cliente, porque SAP no lo impide. Si la
+      pertenencia no sale del cliente, que el cliente no tenga vendedor no
+      impide nada. La respuesta ya estaba en el contrato; lo que faltaba era
+      llevarla hasta este caso.
+
+    ★ CONSECUENCIA SOBRE LA NULABILIDAD, que no cambia pero cambia su porqué
+      `OrderSummary.salesperson_code` sigue no-nullable, y no porque la orden
+      no pueda existir: porque siempre lleva un vendedor ELEGIDO, real y
+      activo. `PendingAccountPayment` y `PendingCreditRequest` lo llevan
+      no-nullable por la otra razón: su documento no puede existir sin él.
+      Mismo campo, misma declaración, dos motivos distintos.
+
+    ⚠️ "CERO" NO ERA LA PRUEBA
+      En dev no había ninguna orden de esos 5 clientes, y eso no probaba
+      nada: no la había porque nadie lo había intentado. Hubo que intentarlo.
+      Es la misma forma que el recorrido sobre una lista vacía y que la
+      página que no contenía ninguna fila relevante — un cero medido sobre un
+      conjunto donde no puede haber nada no es una medición.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.61.0 — EL CENTINELA SE ESCAPABA POR `/admin/clients`
@@ -14967,14 +15010,38 @@ components:
             `-1` y por eso nadie lo veía. `AdminClient.salesperson_code`
             pasa a nullable en v0.61.0 y la asimetría desaparece.
 
-            LA ASIMETRÍA QUE SÍ ES REAL, y es otra: los schemas del CLIENTE
-            —`AdminClient`, `ClientStatement`— llevan el código nullable,
-            porque un cliente puede no tener vendedor. Los schemas de un
-            DOCUMENTO —`PendingAccountPayment`, `PendingCreditRequest`,
-            `OrderSummary`— lo llevan obligatorio, porque un documento de un
-            cliente sin vendedor no debería poder existir: la creación se
-            rechaza antes. Esa es la línea, y no es la que decía la nota
-            vieja.
+            ⚠️ SUPERADO POR v0.62.0: ~~LA ASIMETRÍA QUE SÍ ES REAL, y es
+            otra: los schemas del CLIENTE llevan el código nullable, porque
+            un cliente puede no tener vendedor. Los schemas de un DOCUMENTO
+            lo llevan obligatorio, porque un documento de un cliente sin
+            vendedor no debería poder existir: la creación se rechaza
+            antes.~~ Se midió y es falso para los pedidos.
+
+            ★ v0.62.0 — LA LÍNEA NO ES CLIENTE CONTRA DOCUMENTO. Es de dónde
+            sale la PERTENENCIA:
+
+            · Documentos cuya pertenencia SALE DEL CLIENTE — pago de cartera
+              y solicitud de crédito. Si el cliente no tiene vendedor, no hay
+              de dónde sacarla: la creación se rechaza con 400. MEDIDO.
+
+            · Documentos cuya pertenencia SE ELIGE — el pedido. La regla
+              global 👤 ya tiene escrita esa excepción de negocio: un pedido
+              SÍ puede tomarlo un vendedor distinto del asignado al cliente,
+              porque SAP no lo impide. Como la pertenencia no sale del
+              cliente, que el cliente no tenga vendedor NO IMPIDE NADA: la
+              orden se crea y queda atribuida al vendedor elegido, que es
+              real y está activo. MEDIDO: se crea.
+
+            POR ESO `OrderSummary.salesperson_code` sigue siendo NO nullable
+            con razón, y no por la razón que decía la frase vieja: no es que
+            la orden no pueda existir, es que siempre lleva un vendedor
+            ELEGIDO. Los de pago y crédito son no-nullable porque su
+            documento no puede existir sin él.
+
+            ⚠️ Y el cero de dev no era la prueba: no había ninguna orden de
+            esos 5 clientes simplemente porque nadie lo había intentado.
+            "Cero" y "no puede existir" no son lo mismo, y hubo que
+            intentarlo para saberlo.
 
             ★ v0.60.0 — DE DÓNDE SALE ESE NULL, porque no sale de un NULL.
             En el espejo, `Clients.SalespersonCode` es `int NOT NULL`: un
