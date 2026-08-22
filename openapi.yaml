@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.65.0
+  version: 0.66.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -121,6 +121,32 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.66.0 — …Y TAMBIÉN DE QUIÉN PREGUNTA
+    ══════════════════════════════════════════════════════════════════════════
+
+    Solo texto. Corrige v0.65.0, publicada hace un rato, y la corrección
+    volvió a salir de una medición que no dio lo esperado.
+
+    ★ LO QUE v0.65.0 DEJÓ A MEDIAS
+      Escribió "en `GET /sync/clients` (2.633): 11 y 0". Es cierto como
+      AGREGADO y engañoso como valor esperado: ese endpoint devuelve los
+      clientes DEL VENDEDOR QUE PREGUNTA, así que ninguna llamada real ve
+      2.633. Con el token de `vendedor1` son 327 clientes, 1 sin zona de
+      reparto y 0 sin zona de visita.
+
+    ★ LA FORMA CORRECTA DE ENUNCIAR UN VALOR ESPERADO
+      Siempre "sobre esta superficie y con este token". v0.65.0 arregló la
+      mitad —distinguir el endpoint— y dejó la otra. Un agente que mida con
+      un token y espere el 11 agregado va a creer que falta algo: la misma
+      falsa alarma que esta sección vino a evitar, un nivel más adentro.
+
+    ★ EL EJEMPLO QUE VALE MÁS QUE LOS NÚMEROS
+      `C102511` tiene `shipping_code_name` en null y `shipping_route_name` en
+      "Queens foodservices". No tiene camión que lo reparta y sí tiene
+      vendedor que lo visita. Es el retrato exacto de por qué los dos ejes
+      son independientes, y ahora se ve así en la pantalla del vendedor.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.65.0 — CUÁNTOS NULOS HAY DEPENDE DE POR DÓNDE SE MIRE
@@ -15053,6 +15079,27 @@ components:
 
             Quien mida sobre `/sync/clients` esperando 16 y 5 va a creer que
             hay un error de resolución donde no lo hay.
+
+            ★ v0.66.0 — Y ESOS 11 Y 0 SON UNA UNIÓN, NO LO QUE VE NADIE.
+            `/sync/clients` devuelve los clientes DEL VENDEDOR QUE PREGUNTA,
+            así que ninguna llamada real ve 2.633 clientes: cada vendedor ve
+            los suyos. Medido con el token de `vendedor1`: **327 clientes, 1
+            sin zona de reparto, 0 sin zona de visita**.
+
+            O sea que el conteo esperado no depende solo del endpoint —
+            depende de QUIÉN PREGUNTA. Un agente que mida con un token y
+            espere el 11 agregado va a creer que falta algo, que es
+            exactamente la falsa alarma que esta sección vino a evitar.
+            La forma correcta de enunciar un valor esperado acá es siempre
+            "sobre esta superficie y con este token".
+
+            EJEMPLO REAL, y es el mejor retrato de por qué los dos ejes son
+            independientes: el cliente `C102511` tiene `shipping_code_name`
+            en **null** y `shipping_route_name` en **"Queens foodservices"**.
+            No tiene camión que lo reparta y sí tiene vendedor que lo visita.
+            En pantalla se lee "Zona de reparto: sin zona de reparto
+            asignada" junto a "Zona de visita: Queens foodservices" — las dos
+            filas visibles, cada una con su eje nombrado.
 
             ★ EL INVARIANTE QUE SE SIGUE, y vale como regla de negocio:
             NINGÚN CLIENTE QUE UN VENDEDOR PUEDA VER CARECE DE ZONA DE VISITA.
