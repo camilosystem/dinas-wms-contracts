@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.57.0
+  version: 0.58.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -121,6 +121,39 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.58.0 — EL VENDEDOR TAMBIÉN EN EL ESTADO DE CUENTA (D4)
+    ══════════════════════════════════════════════════════════════════════════
+
+    ★ `ClientStatement` gana `salesperson_code` y `salesperson_name`
+      Los dos nullable. Cierra D4: el nombre del vendedor ya estaba en la
+      grilla de clientes desde v0.42.0 y en las órdenes desde v0.57.0, pero
+      el estado de cuenta no lo tenía y no había forma de mostrarlo sin
+      cruzar dos llamadas del lado del cliente.
+
+    ★ UN SOLO CAMBIO CUBRE LOS DOS CONSUMIDORES, Y ESO ESTÁ MEDIDO
+      `ClientStatement` lo devuelven dos rutas y ninguna otra:
+
+        · GET /clients/{client_code}/statement         → el VENDEDOR, app-sales
+        · GET /admin/clients/{client_code}/statement   → el DASHBOARD
+
+      Las dos devuelven el mismo schema, así que el campo llega a la app de
+      vendedores y a la oficina sin que haya un segundo lado que olvidar.
+
+    ★ POR QUÉ VIAJAN LOS DOS CAMPOS Y NO SOLO EL NOMBRE
+      Porque `null` en el nombre tiene dos causas distintas con arreglos
+      distintos: que el cliente no tenga vendedor asignado, o que el código
+      exista y esté huérfano en el espejo. Con el código al lado, el
+      consumidor las distingue; con el nombre solo, no. Un campo que
+      colapsa dos causas en un mismo valor obliga a adivinar cuál es.
+
+    ⚠️ EL NULL DE `salesperson_code` NO ES COSMÉTICO
+      Un cliente sin vendedor asignado no puede recibir un pago: desde
+      v0.55.0 el servidor resuelve el vendedor DESDE EL CLIENTE y devuelve
+      400 nombrándolo cuando no hay ninguno. Ver ese null en el estado de
+      cuenta es ver por adelantado por qué va a fallar el pago, en vez de
+      descubrirlo al intentarlo.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.57.0 — EL NOMBRE DEL VENDEDOR EN LAS ÓRDENES (D5)
@@ -14741,6 +14774,48 @@ components:
       properties:
         client_code: { type: string }
         client_name: { type: string }
+        salesperson_code:
+          type: string
+          nullable: true
+          description: >
+            ★ NUEVO en v0.58.0. El código del vendedor asignado a ESTE
+            CLIENTE, que es de dónde sale a quién pertenece un pago (regla
+            global 👤).
+
+            ⚠️ ES NULLABLE A PROPÓSITO, y su null es un dato con
+            consecuencias: un cliente sin vendedor asignado NO PUEDE RECIBIR
+            UN PAGO — `POST /account-payments` devuelve 400 nombrándolo
+            desde v0.55.0, porque el servidor resuelve el vendedor desde el
+            cliente y ahí no hay nada que resolver. Ver ese campo en null en
+            el estado de cuenta es ver por adelantado por qué va a fallar el
+            pago, en vez de descubrirlo al intentarlo.
+
+            No se resuelve preguntándole a quien carga el pago: se resuelve
+            arreglando el cliente en SAP.
+
+            Nota de asimetría, deliberada: `AdminClient.salesperson_code` NO
+            es nullable. Acá sí, porque el error no es simétrico — prever un
+            nulo que no ocurre hace que el cliente escriba una rama que no
+            se ejecuta; no preverlo rompe con un dato real.
+        salesperson_name:
+          type: string
+          nullable: true
+          description: >
+            ★ NUEVO en v0.58.0. El nombre del vendedor asignado, resuelto
+            por el servidor desde el ESPEJO DE VENDEDORES DE SAP, con el
+            mismo criterio que `OrderSummary.salesperson_name` (v0.57.0) y
+            `AdminClient.salesperson_name` (v0.42.0).
+
+            ⚠️ NUNCA contra la tabla de cuentas de login: en dev hay 19
+            vendedores activos en SAP y solo 3 con cuenta.
+
+            `null` por DOS razones distintas que el consumidor no puede
+            separar desde este campo solo, y por eso viaja junto a
+            `salesperson_code`: o el cliente no tiene vendedor asignado
+            —y entonces `salesperson_code` también es null—, o el código
+            existe pero quedó huérfano en el espejo —y entonces
+            `salesperson_code` tiene valor—. La pantalla muestra el código
+            cuando lo hay, y nunca un guion ni una cadena vacía.
         credit:
           $ref: '#/components/schemas/ClientCredit'
         documents:
