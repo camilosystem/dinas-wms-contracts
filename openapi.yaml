@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.59.0
+  version: 0.60.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -121,6 +121,48 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.60.0 — EL NULL DE `salesperson_code` NO SALE DE UN NULL
+    ══════════════════════════════════════════════════════════════════════════
+
+    Solo texto: ningún campo cambia de forma. Se escribe una INTERPRETACIÓN
+    que ya está en el código, para que se pueda discutir en vez de quedar
+    enterrada.
+
+    ★ EL CENTINELA
+      `Clients.SalespersonCode` es `int NOT NULL` en el espejo: un nulo no es
+      representable. SAP dice "sin vendedor" con **-1**, con el nombre
+      literal `-No Sales Employee / Buyer-`. El servidor traduce ese -1 a
+      `null` al LEER; el espejo sigue guardando -1 y la sincronización no se
+      toca.
+
+    ★ POR QUÉ SE ESCRIBE Y NO SE DEJA EN EL CÓDIGO
+      Sin la traducción, `ClientStatement.salesperson_code` no sería `null`
+      nunca, y la promesa que v0.58.0 escribió —ver el null antes de que
+      falle el pago— no se cumpliría jamás. Un campo cuya rama nula no puede
+      ocurrir es documentación que miente. Y como es una interpretación y no
+      un hecho literal de SAP, tiene que estar donde se pueda discutir.
+
+    ★ LO QUE NO SE HACE, Y ES LA PARTE FÁCIL DE EQUIVOCAR
+      El espejo ya trae un nombre para esos clientes: `-No Sales Employee /
+      Buyer-`. Usarlo habría sido rellenar el null con una frase — un texto
+      de SAP presentado como si fuera el nombre de una persona. Es el mismo
+      error que `?? 0` y `?? []`: convertir "no hay dato" en una afirmación.
+
+    ★ LA MEDICIÓN, Y CÓMO SE COMPROBÓ
+      Son 5 clientes en dev: C102612, C102630, C102631, C102634, C102641. Se
+      verificó por DOS vías independientes que son exactamente el mismo
+      conjunto que hoy no puede recibir un pago. No es una correspondencia
+      deducida de un mecanismo: se contó de las dos formas y dio el mismo
+      conjunto.
+
+    ⚠️ ESOS 5 CLIENTES SON INVISIBLES PARA TODOS LOS VENDEDORES
+      `GET /clients/{client_code}/statement` les responde 403 al vendedor, y
+      `POST /account-payments` responde 400. No es un caso raro del permiso:
+      es la regla global 👤 llevada hasta el final — un cliente sin vendedor
+      no pertenece a nadie. **El arreglo no está en el WMS: es asignarles
+      vendedor en SAP.**
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.59.0 — `image_url` ES RELATIVA Y PEDIRLA EXIGE EL TOKEN
@@ -14873,6 +14915,43 @@ components:
             es nullable. Acá sí, porque el error no es simétrico — prever un
             nulo que no ocurre hace que el cliente escriba una rama que no
             se ejecuta; no preverlo rompe con un dato real.
+
+            ★ v0.60.0 — DE DÓNDE SALE ESE NULL, porque no sale de un NULL.
+            En el espejo, `Clients.SalespersonCode` es `int NOT NULL`: un
+            nulo no es representable. SAP dice "sin vendedor" con el
+            CENTINELA **-1**, cuyo nombre asociado es el literal
+            `-No Sales Employee / Buyer-`.
+
+            El servidor traduce ese -1 a `null` al leer. La traducción es de
+            SOLO LECTURA: el espejo sigue guardando -1 tal cual y la
+            sincronización no se toca.
+
+            ⚠️ ES UNA INTERPRETACIÓN DEL DATO DE SAP, y se escribe acá para
+            que se pueda discutir en vez de quedar enterrada en el código.
+            Sin ella el campo no sería `null` NUNCA y la promesa de este
+            contrato —ver el null antes de que falle el pago— no se cumpliría
+            jamás. Un campo cuya rama nula no puede ocurrir es documentación
+            que miente.
+
+            ⚠️ Y NO SE RELLENA CON EL NOMBRE QUE SAP TRAE. `-No Sales
+            Employee / Buyer-` es texto de SAP, no un nombre de persona:
+            usarlo sería exactamente rellenar un null con una frase, que es
+            lo que convierte un hecho del dato en ruido de presentación.
+
+            MEDIDO en dev el 22-ago-2026: son 5 clientes —C102612, C102630,
+            C102631, C102634 y C102641— y se comprobó por DOS vías
+            independientes que son exactamente el mismo conjunto que hoy no
+            puede recibir un pago. No es una correspondencia deducida: se
+            contó de las dos formas y dio el mismo conjunto.
+
+            ⚠️ CONSECUENCIA QUE CONVIENE SABER: para uno de esos clientes,
+            `GET /clients/{client_code}/statement` responde **403** al
+            vendedor. No es un caso raro del permiso: es la regla global 👤
+            llevada hasta el final —a quién pertenece un cliente lo dice el
+            cliente, y uno sin vendedor no pertenece a nadie—. Esos clientes
+            son invisibles para todos los vendedores y no pueden recibir
+            pagos hasta que se les asigne vendedor EN SAP. El arreglo no está
+            en el WMS.
         salesperson_name:
           type: string
           nullable: true
