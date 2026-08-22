@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.64.0
+  version: 0.65.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -121,6 +121,49 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.65.0 — CUÁNTOS NULOS HAY DEPENDE DE POR DÓNDE SE MIRE
+    ══════════════════════════════════════════════════════════════════════════
+
+    Solo texto. Sale de una medición que no dio lo que el contrato hacía
+    esperar, y que resultó ser correcta.
+
+    ★ LO QUE PASÓ
+      El contrato decía "16 sin zona de reparto y 5 sin zona de visita, sobre
+      2.638". Al implementar los campos en `Client`, la medición sobre
+      `GET /sync/clients` dio **11 y 0**. El agente no lo tomó por un error de
+      resolución ni ajustó nada para que cuadrara: fue a buscar de dónde
+      venía la diferencia.
+
+    ★ DE DÓNDE VENÍA
+      Los 5 clientes sin zona de visita son exactamente los 5 sin vendedor.
+      Y `/sync/clients` filtra por igualdad contra el código del vendedor, así
+      que un cliente sin vendedor no pertenece a nadie y no se devuelve nunca
+      por ahí. La resta cuadra exacta: 16 − 5 = 11 y 5 − 5 = 0, y los 11 se
+      verificaron por separado.
+
+      Los dos números eran correctos. Lo que faltaba era decir SOBRE QUÉ
+      SUPERFICIE valía cada uno.
+
+    ★ POR QUÉ SE ESCRIBE
+      Un conteo esperado que no distingue el endpoint es una falsa alarma
+      esperando: quien mida sobre `/sync/clients` va a creer que resolvió mal
+      un campo que resolvió bien. Y una falsa alarma que se explica dos veces
+      termina desactivada.
+
+    ★ EL INVARIANTE DE NEGOCIO QUE APARECIÓ DE PASO
+      Ningún cliente que un vendedor pueda ver carece de zona de visita. Los
+      únicos sin zona son los que además no tiene nadie — el mismo conjunto
+      huérfano que no puede recibir pagos.
+
+    ⚠️ Y SU CONSECUENCIA PARA LOS CLIENTES DE `/sync/clients`
+      La rama de "sin zona de visita" no se puede ejercitar contra los datos
+      de hoy: no hay ninguna fila que la active. Se escribe igual —un cliente
+      puede perder su ruta conservando su vendedor— pero su verificación es
+      por fixture y hay que decirlo así. Es la misma disciplina que con la
+      bandeja de retenidos vacía: una superficie que no devuelve filas no se
+      verifica mirando filas.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.64.0 — CADA FRASE DE NULO NOMBRA SU EJE
@@ -14992,9 +15035,36 @@ components:
 
             ⚠️ Y NO COMPARTE TEXTO CON EL OTRO EJE. Un mismo mensaje para los
             dos vuelve a fundirlos justo en el lugar donde el contrato los
-            separa. En dev son 5 clientes sin zona de visita y 16 sin zona de
-            reparto: son huecos distintos, de tamaños distintos, y se
-            arreglan en registros distintos de SAP.
+            separa. Son huecos distintos, de tamaños distintos, y se arreglan
+            en registros distintos de SAP.
+
+            ★ v0.65.0 — CUÁNTOS SON DEPENDE DE POR DÓNDE SE MIRE, y esto
+            evita una falsa alarma:
+
+              · En la base y en `AdminClient` (los 2.638): **16** sin zona de
+                reparto y **5** sin zona de visita.
+              · En `GET /sync/clients` (2.633): **11** y **0**.
+
+            La diferencia es exactamente 5 en los dos, y son los mismos 5:
+            los clientes sin vendedor. `/sync/clients` filtra por igualdad
+            contra el código del vendedor, así que un cliente sin vendedor no
+            pertenece a ninguno y NO SE DEVUELVE NUNCA por ahí. 16 − 5 = 11,
+            5 − 5 = 0.
+
+            Quien mida sobre `/sync/clients` esperando 16 y 5 va a creer que
+            hay un error de resolución donde no lo hay.
+
+            ★ EL INVARIANTE QUE SE SIGUE, y vale como regla de negocio:
+            NINGÚN CLIENTE QUE UN VENDEDOR PUEDA VER CARECE DE ZONA DE VISITA.
+            Los únicos sin zona son los que además no tiene nadie.
+
+            ⚠️ CONSECUENCIA PARA QUIEN CONSUMA `/sync/clients`: la rama de
+            "sin zona de visita" NO SE PUEDE EJERCITAR con los datos reales
+            de hoy — no hay ninguna fila que la active. La rama se escribe
+            igual, porque un cliente puede perder su ruta en SAP conservando
+            su vendedor; pero su verificación es por fixture, y hay que
+            reportarla como tal en vez de darla por probada contra datos
+            reales. La rama de "sin zona de reparto" sí se ejercita: son 11.
         shipping_route_name:
           type: string
           nullable: true
