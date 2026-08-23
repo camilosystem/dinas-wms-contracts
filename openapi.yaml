@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.69.0
+  version: 0.70.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -121,6 +121,47 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.70.0 — LAS FACTURAS DEL PAGO DE RUTA, COMO LISTA (Dr1)
+    ══════════════════════════════════════════════════════════════════════════
+
+    ★ `invoice_doc_nums` EN EL PAGO DE RUTA
+      Se agrega a `POST /dispatch/payments` y a `Payment`. Opcional, lista de
+      cadenas, con el MISMO nombre y la MISMA forma que ya tenían
+      `DepositablePayment` y `DepositedPayment` — es el mismo hecho, y un
+      segundo nombre para el mismo hecho es cómo empiezan a divergir.
+
+    ★ POR QUÉ AHORA, SI HOY ES SOLO INFORMATIVO
+      Los pagos de ruta no tienen camino a SAP porque les faltan dos cosas:
+      las facturas aplicadas y la autorización. Esta es la primera.
+
+      Guardarlo estructurado hoy no cuesta nada. Recuperarlo mañana de un
+      campo de notas sí, porque nadie puede reconstruir de forma confiable
+      qué era un número de factura y qué era un comentario del driver. **La
+      estructura se pierde una sola vez** — después solo queda arqueología.
+
+    ⚠️ ESTRUCTURADO NO ES VERIFICADO
+      Estos números son lo que el cliente le dijo al driver en la calle. El
+      servidor no los valida contra SAP ni contra el estado de cuenta, ni
+      comprueba que existan. Se guardan tal como llegan PARA QUE UN DÍA SE
+      PUEDAN VERIFICAR, no porque ya lo estén.
+
+      Es una distinción que cuesta cuando no se escribe: quien vea una lista
+      ordenada en una pantalla va a querer imputar con ella, y todavía no
+      alcanza para eso.
+
+    ★ Y SE CORRIGE UNA FRASE QUE DEJÓ DE SER CIERTA
+      `DepositedPayment.invoice_doc_nums` decía "SIEMPRE vacío en los pagos
+      de RUTA… ese trabajo es de otro bloque". Ese otro bloque era Dr1 y ya
+      llegó. Queda tachada, no borrada.
+
+      Y en su lugar se escribe la distinción que ahora importa, porque los
+      dos tipos de pago conviven en la misma pantalla de depósitos: en un
+      pago de CARTERA la lista es la imputación aprobada que viaja a SAP; en
+      uno de RUTA es lo que dijo el cliente, sin verificar y sin autorizar.
+      Misma forma, mismo nombre, significados distintos — y por eso la
+      pantalla tiene que decir cuál está mirando.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.69.0 — LA RUTA CERRADA SE PUEDE VOLVER A MIRAR (Dr4 + Dr5)
@@ -11315,6 +11356,8 @@ paths:
           · CHEQUE: `check_number` y `photo_base64` OBLIGATORIOS.
           · CASH: sin foto ni número de cheque (mandarlos → 400).
           · `occurred_at` = la hora real de la visita.
+          · ★ v0.70.0 — `invoice_doc_nums`: las facturas que el cliente dice
+            estar pagando. LISTA, no texto libre. Opcional.
       requestBody:
         required: true
         content:
@@ -11338,6 +11381,34 @@ paths:
                   format: double
                   description: El monto recibido. Debe ser > 0.
                 payment_type: { $ref: '#/components/schemas/PaymentType' }
+                invoice_doc_nums:
+                  type: array
+                  items: { type: string }
+                  description: >
+                    ★ NUEVO en v0.70.0 (Dr1). Los números de factura que el
+                    cliente dice estar pagando con este dinero.
+
+                    ★ POR QUÉ LISTA Y NO TEXTO LIBRE, hoy que todavía es solo
+                    informativo: los pagos de ruta no tienen camino a SAP
+                    porque les faltan dos cosas, las facturas aplicadas y la
+                    autorización. Esto es la primera de las dos. Guardarlo
+                    estructurado desde ahora no cuesta nada; recuperarlo
+                    después de un campo de notas SÍ, porque nadie puede
+                    reconstruir de forma confiable qué era un número de
+                    factura y qué era un comentario del driver. La estructura
+                    se pierde una sola vez.
+
+                    ⚠️ ESTRUCTURADO NO ES VERIFICADO. Estos números son lo
+                    que el cliente le dijo al driver en la calle. El servidor
+                    NO los valida contra SAP ni contra el estado de cuenta —
+                    ni siquiera comprueba que existan. Se guardan tal como
+                    llegan para que un día se puedan verificar, no porque ya
+                    lo estén. No los trates como una imputación.
+
+                    OMITIR LA CLAVE Y MANDAR UNA LISTA VACÍA SIGNIFICAN LO
+                    MISMO: el driver no anotó ninguna factura. Es un estado
+                    legítimo y frecuente —un abono a cuenta no tiene factura
+                    que nombrar— y no un dato que falte.
                 check_number:
                   type: string
                   nullable: true
@@ -12623,9 +12694,26 @@ components:
             Las facturas a las que se aplica ese pago. Vacío si es un pago a
             cuenta sin aplicar.
 
-            ★ v0.54.0 — SIEMPRE vacío en los pagos de RUTA: hoy no tienen
-            facturas asignadas. Vacío ahí significa "todavía nadie las
-            asignó", y ese trabajo es de otro bloque.
+            ⚠️ SUPERADO POR v0.70.0: ~~★ v0.54.0 — SIEMPRE vacío en los
+            pagos de RUTA: hoy no tienen facturas asignadas.~~ Ese "otro
+            bloque" era Dr1 y ya llegó.
+
+            ★ v0.70.0 — En un pago de RUTA ahora puede venir con contenido:
+            son las facturas que el cliente le dijo al driver, guardadas como
+            lista desde `POST /dispatch/payments`.
+
+            ⚠️ PERO NO SIGNIFICAN LO MISMO QUE EN UN PAGO DE CARTERA, y la
+            diferencia importa justo acá, donde los dos tipos conviven en la
+            misma pantalla:
+
+            · En un pago de CARTERA son la IMPUTACIÓN — el aprobador las
+              confirmó y viajan a SAP.
+            · En un pago de RUTA son lo que DIJO EL CLIENTE, sin verificar
+              contra nada. Nadie las aprobó y todavía no hay camino a SAP:
+              falta la autorización, que es la otra mitad del bloque.
+
+            Vacío sigue significando "no hay ninguna anotada", en los dos
+            casos.
 
     DepositablePayment:
       type: object
@@ -14873,6 +14961,23 @@ components:
           type: string
           nullable: true
           description: Solo para CHEQUE.
+        invoice_doc_nums:
+          type: array
+          items: { type: string }
+          description: >
+            ★ NUEVO en v0.70.0 (Dr1). Las facturas que el cliente dijo estar
+            pagando, tal como las anotó el driver. Mismo nombre y misma forma
+            que en `DepositablePayment` y `DepositedPayment` a propósito: es
+            el mismo hecho y un segundo nombre para el mismo hecho es cómo
+            empiezan a divergir.
+
+            ⚠️ NO ESTÁN VERIFICADAS contra SAP ni contra el estado de cuenta.
+            Son lo que el cliente dijo en la calle. La pantalla que las
+            muestre tiene que dejarlo claro: quien las lea va a querer
+            usarlas para imputar, y todavía no alcanzan para eso.
+
+            Vacío = el driver no anotó ninguna. Es un estado legítimo, no un
+            hueco.
         has_photo:
           type: boolean
           description: TRUE para CHEQUE (la foto es obligatoria), FALSE para CASH.
