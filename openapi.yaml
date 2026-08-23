@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.67.0
+  version: 0.68.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -121,6 +121,28 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.68.0 — CÓMO SE DICE "NO HAY FOTO"
+    ══════════════════════════════════════════════════════════════════════════
+
+    Solo texto. Dos preguntas que aparecieron apenas se fue a implementar
+    Dr3, y que dejadas abiertas cuestan un retorno perdido en la calle.
+
+    ★ OMITIR LA CLAVE, NO MANDAR `null`
+      El cliente OMITE `photo_base64` cuando no hay foto: la ausencia de un
+      hecho no es un valor. El servidor acepta LAS DOS formas y las trata
+      igual — no por tolerar desprolijidad, sino porque un cliente viejo y
+      uno nuevo pueden elegir distinto y un retorno no puede fallar por eso.
+      Se registra sin conexión, y quien lo sufre es un driver parado frente
+      al cliente.
+
+    ★ `has_photo` LO DERIVA EL SERVIDOR
+      No está en el cuerpo de la petición y no es un descuido: si el cliente
+      lo declarara, podría afirmar que hay foto sin haberla mandado, y el
+      campo dejaría de ser evidencia para pasar a ser una opinión. Es la
+      misma razón por la que la pertenencia de un pago sale del cliente y no
+      de quien lo carga.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.67.0 — LA FOTO DEL RETORNO PASA A OPCIONAL (Dr3)
@@ -10967,6 +10989,27 @@ paths:
                     Lo que NO cambia: los retornos que SÍ la llevan siguen
                     igual, con la misma ruta de lectura y el mismo
                     almacenamiento.
+
+                    ★ v0.68.0 — CÓMO SE DICE "NO HAY FOTO", porque la
+                    pregunta apareció apenas se fue a implementar y dejarla
+                    abierta cuesta un retorno perdido en la calle:
+
+                    · El CLIENTE **omite la clave**. No hay foto no es un
+                      valor: es la ausencia del hecho. Y encaja con la cola
+                      sin conexión, donde una acción sin foto simplemente no
+                      tiene nada que mandar.
+                    · El SERVIDOR acepta **las dos formas** —clave omitida y
+                      `null`— y las trata idénticamente. No para tolerar
+                      desprolijidad, sino porque un cliente viejo o uno nuevo
+                      pueden elegir distinto y el retorno no puede fallar por
+                      eso: se registra sin conexión, y quien lo sufre es un
+                      driver parado frente al cliente.
+
+                    ⚠️ Y `has_photo` LO DERIVA EL SERVIDOR, no lo manda el
+                    cliente. No está en este cuerpo de petición a propósito:
+                    si el cliente lo declarara, podría afirmar que hay foto
+                    sin haberla mandado, y el campo dejaría de ser evidencia
+                    para pasar a ser una opinión.
                 note: { type: string, nullable: true }
                 occurred_at:
                   type: string
