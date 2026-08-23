@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.68.0
+  version: 0.69.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -121,6 +121,70 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.69.0 — LA RUTA CERRADA SE PUEDE VOLVER A MIRAR (Dr4 + Dr5)
+    ══════════════════════════════════════════════════════════════════════════
+
+    ★ DOS ÍTEMS QUE ERAN EL MISMO HUECO
+      Dr4 pedía el resumen al terminar la ruta y Dr5 pedía el historial de
+      rutas anteriores. Medido: `RouteSummary` YA TRAÍA todo lo que Dr4
+      necesitaba —entregados, parciales, no entregados, pendientes y
+      retornados— pero lo devolvía UN SOLO camino, `POST
+      /dispatch/finish-route`. Si el driver cerraba la pantalla, el resumen
+      no se podía volver a ver nunca.
+
+      Hacer Dr4 "casi todo front" habría enviado una pantalla visible una
+      sola vez, y Dr5 la habría reconstruido después.
+
+    ★ TERCERA APARICIÓN DE UNA FORMA YA NOMBRADA
+      Detalle como respuesta de una acción, sin puerta de lectura. v0.31.2 la
+      corrigió para solicitudes de crédito, v0.53.0 para pagos de cartera, y
+      ahora aparece en la superficie del driver. Las tres se arreglan igual:
+      bandeja liviana MÁS puerta de lectura, nunca una sola de las dos.
+
+    ★ `GET /dispatch/routes` y `GET /dispatch/routes/{truck_id}`
+      La bandeja devuelve `ClosedRouteEntry`, nuevo y a propósito más liviano
+      que el resumen. El detalle devuelve **el mismo `RouteSummary`** que el
+      cierre: un solo schema para los dos caminos hace imposible que las dos
+      pantallas muestren cosas distintas.
+
+    ★ NO SE INVENTÓ UN `route_id`, Y ESO ESTÁ MEDIDO
+      Se crea un camión POR JORNADA: la regla de nombres es "un nombre, un
+      camión por día" y no existe ningún camino que reabra un camión para
+      otro día. En dev se ve además de deducirse — tres camiones distintos
+      para la ruta 11, creados en tres días distintos. Así que el camión ES
+      la ruta, y agregar un identificador nuevo habría duplicado un concepto
+      que el dominio ya tenía.
+
+    ⚠️ ES UNA VISTA VIVA Y NO UNA FOTO — DECIDIDO, NO HEREDADO
+      Los contadores se calculan al pedirlos. La oficina puede corregir la
+      entrega de un pedido de una ruta ya cerrada, a propósito, así que abrir
+      la misma ruta más adelante puede dar otros números.
+
+      Se eligió así porque la pregunta que contesta la pantalla es "¿qué pasó
+      con estos pedidos?" y la respuesta correcta a eso es la de hoy. Si el
+      driver se equivocó y la oficina lo corrigió, mostrarle su versión vieja
+      le esconde lo que tendría que ver.
+
+      LO QUE NO ES: un registro de auditoría. Si algún día hace falta saber
+      qué reportó el driver EN EL MOMENTO del cierre, eso es una foto
+      congelada — otra decisión, otra tabla, y una discrepancia legítima
+      entre las dos que habría que nombrar. Hoy no existe.
+
+    ⚠️ Y SE CIERRA UNA PUERTA QUE HACÍA FALSA LA IDENTIDAD
+      El agente del middleware encontró leyendo el código que un camión en
+      RUTA_CERRADA todavía se puede DESASIGNAR, y desde ahí recorrer otra vez
+      todo el camino hasta una segunda ruta — pisando `RouteStartedAtUtc` y
+      `RouteFinishedAtUtc` de la primera, sin tabla de historial que los
+      conserve. Siete de los ocho escritores del estado tratan RUTA_CERRADA
+      como terminal; ese octavo era la anomalía.
+
+      Hoy nadie recorrió ese camino, así que "(camión, jornada) = una ruta"
+      era cierto por coincidencia y no por invariante. Con este bloque pasa a
+      ser una invariante: **desasignar deja de funcionar sobre un camión en
+      RUTA_CERRADA**. No es una restricción nueva del negocio — es cerrar un
+      camino de pérdida de datos que ya existía aunque Dr5 no existiera.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.68.0 — CÓMO SE DICE "NO HAY FOTO"
@@ -10706,6 +10770,86 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
 
+  /dispatch/routes:
+    get:
+      tags: [dispatch]
+      summary: Las rutas que este driver ya cerró
+      description: >
+        ★ NUEVO en v0.69.0 (Dr5). REQUIERE rol DRIVER. Devuelve SOLO las
+        rutas del driver que pregunta, más nuevas primero.
+
+        ★ POR QUÉ EXISTE: hasta v0.68.0 el resumen de una ruta solo se
+        obtenía como respuesta de `POST /dispatch/finish-route`. Si el driver
+        cerraba la pantalla, ese resumen no se podía volver a ver NUNCA, y no
+        había forma de mirar la jornada de ayer.
+
+        Es la TERCERA vez de la misma forma en este contrato —detalle como
+        respuesta de una acción, sin puerta de lectura—. v0.31.2 la corrigió
+        para las solicitudes de crédito y v0.53.0 para los pagos de cartera.
+        Las tres se arreglan igual: bandeja liviana MÁS puerta de lectura,
+        nunca una sola de las dos.
+
+        NO incluye la ruta EN CURSO: esa es `GET /dispatch/my-route`, que
+        además trae las paradas para trabajar sin conexión. Acá solo hay
+        jornadas terminadas.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Página de rutas cerradas del driver
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  page: { type: integer }
+                  page_size: { type: integer }
+                  total: { type: integer }
+                  routes:
+                    type: array
+                    items: { $ref: '#/components/schemas/ClosedRouteEntry' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /dispatch/routes/{truck_id}:
+    get:
+      tags: [dispatch]
+      summary: El resumen de una ruta que este driver ya cerró
+      description: >
+        ★ NUEVO en v0.69.0 (Dr4). REQUIERE rol DRIVER, y la ruta debe ser
+        SUYA → 403 si no. Es la puerta de lectura que faltaba.
+
+        ★ DEVUELVE EL MISMO `RouteSummary` QUE `POST /dispatch/finish-route`,
+        y eso es deliberado: un solo schema para los dos caminos hace
+        IMPOSIBLE que la pantalla del cierre y la del historial muestren
+        cosas distintas. Dos schemas parecidos divergen; el mismo schema no
+        puede.
+
+        ⚠️ SE PIDE CON EL `truck_id`, PORQUE UNA RUTA NO TIENE OTRA
+        IDENTIDAD. Está medido: se crea un camión POR JORNADA —la regla de
+        nombres es "un nombre, un camión por día" y no existe ningún camino
+        que reabra un camión para otro día— así que el camión ES la ruta. No
+        se inventó un `route_id` para no agregar un concepto que el dominio
+        ya tenía con otro nombre.
+
+        Solo responde para camiones en RUTA_CERRADA → 404 si la ruta todavía
+        no terminó. Para la ruta en curso está `GET /dispatch/my-route`.
+      parameters:
+        - name: truck_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: El resumen de esa ruta
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RouteSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /dispatch/start-route:
     post:
       tags: [dispatch]
@@ -14446,11 +14590,91 @@ components:
                   no se repartió. `[]` = se repartió y de este ítem no viajó
                   nada. Una lista vacía NO se muestra como "sin datos".
 
+    ClosedRouteEntry:
+      type: object
+      description: >
+        ★ NUEVO en v0.69.0. Una jornada terminada, con lo justo para
+        RECONOCERLA y elegirla en una lista. El detalle completo se pide con
+        `GET /dispatch/routes/{truck_id}`, que devuelve `RouteSummary`.
+
+        Es a propósito más liviana que el resumen: una lista de meses de
+        rutas no tiene por qué traer los retornados de cada una. Lo que la
+        hace segura es que la puerta de lectura existe — una bandeja
+        reducida SIN detalle alcanzable es el hueco que este contrato ya
+        pagó dos veces.
+      properties:
+        truck_id:
+          type: string
+          format: uuid
+          description: >
+            Identifica la ruta. Se usa tal cual en
+            `GET /dispatch/routes/{truck_id}`.
+        truck_name:
+          type: string
+          nullable: true
+          description: >
+            El nombre del camión de esa jornada (BRONX, Ruta 11 - Corona…).
+
+            ⚠️ ES EL NOMBRE ACTUAL, NO UNA COPIA HISTÓRICA. Si alguien
+            renombra el camión, esta lista muestra el nombre nuevo también
+            para la jornada vieja. Es coherente con que todo este bloque sea
+            una VISTA VIVA (ver `RouteSummary`), y se dice acá para que nadie
+            lo lea como un registro congelado.
+        route_date:
+          type: string
+          format: date
+          nullable: true
+          description: >
+            El DÍA TRABAJADO, como día calendario de America/New_York
+            derivado de `started_at` (regla global ⏰).
+
+            ⚠️ ES UNA ETIQUETA, NO UNA CLAVE. La identidad es `truck_id`. Se
+            deriva del ARRANQUE y no del cierre a propósito: una ruta que se
+            cierra a las 00:30 pertenece a la jornada anterior, que es la que
+            el driver reconoce como "ayer". Y tampoco se deriva de cuándo se
+            creó el camión, que puede ser el día previo — son tres fechas
+            distintas y solo una es la jornada.
+
+            `null` si la ruta se cerró sin haberse iniciado nunca. Es un dato
+            en sí mismo, no un hueco de la pantalla.
+        started_at: { type: string, format: date-time, nullable: true }
+        finished_at: { type: string, format: date-time }
+        total_orders: { type: integer }
+        delivered_count: { type: integer }
+        not_delivered_count: { type: integer }
+
     RouteSummary:
       type: object
       description: >
         ★ v0.14.0 — El resumen al cerrar la ruta, incluida la lista de
         RETORNADOS (lo que el driver trae de vuelta).
+
+        ★ v0.69.0 — LO DEVUELVEN DOS CAMINOS, con el mismo schema a
+        propósito: `POST /dispatch/finish-route` al cerrar, y
+        `GET /dispatch/routes/{truck_id}` cada vez que se quiera volver a
+        mirar. Un solo schema hace imposible que las dos pantallas muestren
+        cosas distintas.
+
+        ⚠️ ★ v0.69.0 — ES UNA VISTA VIVA, NO UNA FOTO DEL CIERRE, Y ESTÁ
+        DECIDIDO ASÍ. Los contadores se calculan al momento de pedirlos
+        contra el estado de los pedidos, no se congelan al cerrar la ruta.
+
+        POR QUÉ PUEDE CAMBIAR: la oficina PUEDE corregir la entrega de un
+        pedido de una ruta ya cerrada, y eso es deliberado — el admin y el
+        driver coexisten, y una corrección posterior es parte del trabajo
+        normal, no una anomalía. Así que abrir la misma ruta la semana que
+        viene puede dar otros números.
+
+        POR QUÉ SE ELIGIÓ ASÍ: la pregunta que contesta esta pantalla es
+        "¿qué pasó con estos pedidos?", y la respuesta correcta a eso es la
+        de hoy, no la de anteayer. Si el driver se equivocó y la oficina lo
+        corrigió, mostrarle su versión vieja le esconde justamente lo que
+        tendría que ver.
+
+        ⚠️ LO QUE ESTO NO ES: un registro de auditoría. Si algún día hace
+        falta saber qué reportó el driver EN EL MOMENTO del cierre —y no qué
+        es cierto ahora— eso es una foto congelada, una decisión distinta y
+        una tabla propia. Hoy no existe y este campo no la sustituye.
       properties:
         truck_id: { type: string, format: uuid }
         truck_name: { type: string, nullable: true }
