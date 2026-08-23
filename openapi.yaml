@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.71.0
+  version: 0.72.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -121,6 +121,73 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.72.0 — UN DELTA CIEGO AL PASO DEL TIEMPO
+    ══════════════════════════════════════════════════════════════════════════
+
+    Corrige v0.71.0, publicada hace un rato, con un hueco que encontró el
+    agente del middleware al implementarla. Ninguna forma cambia.
+
+    🔴 LA PROMESA SE ROMPÍA POR DEBAJO
+      v0.71.0 escribió que el delta devuelve también los avisos que dejaron
+      de estar vigentes, con `visible: false`. Eso cubre el aviso que alguien
+      APAGA: apagar mueve `updated_at` y un delta normal lo trae.
+
+      Pero un aviso que VENCE no cambia ninguna fila. No hay UPDATE — solo
+      pasa el día. Un delta escrito como se escribe siempre, "¿qué filas
+      cambiaron desde `since`?", no lo vuelve a mandar nunca, y el vendedor
+      se queda con el aviso vencido en pantalla para siempre.
+
+      Devolver `visible: false` no sirve de nada si la fila no entra en el
+      delta. El contrato prometía un mecanismo cuya condición de
+      funcionamiento no había escrito.
+
+    ★ LA REGLA QUE FALTABA
+      El delta incluye también LAS TRANSICIONES DE VIGENCIA: los instantes en
+      que la visibilidad cambia SOLA, sin que nadie toque el aviso. Son las
+      dos medianoches de Nueva York donde la vigencia empieza y termina.
+
+      Vale igual para `starts_on`: un aviso programado para el lunes tampoco
+      se edita el lunes.
+
+    ★ Y LA FORMA GENERAL, que no es solo de este endpoint
+      **Un delta que se apoya solo en una marca de modificación es ciego a
+      todo cambio que dependa del paso del tiempo.** Cualquier campo que el
+      servidor calcule contra "hoy" tiene esta misma trampa. Queda escrito
+      acá porque es donde apareció, pero conviene recordarlo la próxima vez
+      que se diseñe un `since`.
+
+    ★ UN RANGO INVERTIDO SE RECHAZA CON 400
+      Si `ends_on` es anterior a `starts_on`, el aviso no se puede ver nunca
+      — y en la pantalla de la oficina se ve idéntico a uno correcto, con su
+      título, su texto y su interruptor en activo. Alguien lo publicaría,
+      esperaría que apareciera, y no tendría nada que mirar para entender por
+      qué no aparece.
+
+      El agente había escrito esa validación y la SACÓ antes de entregar,
+      porque el contrato no la pedía y agregar un 400 que el contrato no
+      tiene habría roto a un cliente hoy válido. Fue lo correcto: el contrato
+      manda. Ahora el contrato la pide.
+
+    ⚠️ EL DENOMINADOR DE `seen_count` ESTÁ MAL POR PARTIDA DOBLE
+      Se pidió medir contra qué número lo va a comparar la oficina, y la
+      medición no dio lo que parecía. El espejo tiene 19 vendedores activos,
+      pero solo 3 tienen cuenta para entrar, y varios de los otros 16 no son
+      personas — son códigos de SAP como Admin, Bodega, Marketing o
+      Telemarketing.
+
+      "3 de 19" se lee como "casi nadie mira los avisos" cuando en realidad
+      son 3 de 3. El denominador correcto es vendedores CON CUENTA ACTIVA, y
+      hoy ningún endpoint lo expone. Hasta que exista, `seen_count` se
+      muestra como número y no como fracción.
+
+    ★ NOTA DE MÉTODO, porque se repitió tres veces en un día
+      Los tres hallazgos de esta versión salieron de lo mismo: un valor solo
+      significa algo junto a la superficie sobre la que se tomó. El conteo de
+      avisos vistos, el conteo de nulos por endpoint y por token, y el delta
+      que no sabe qué es "cambió" — los tres eran números correctos que
+      mentían al leerse fuera de su contexto.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.71.0 — AVISOS DE LA OFICINA A LOS VENDEDORES (N1)
@@ -5048,6 +5115,32 @@ paths:
         señal se quedaría en su teléfono para siempre: la AUSENCIA de un
         registro no puede comunicar un cambio. Por eso viaja
         `visible`, y el cliente borra o esconde los que llegan en `false`.
+
+        ⚠️ ★ v0.72.0 — Y "LO QUE CAMBIÓ" NO ES "LA FILA QUE SE EDITÓ".
+        Ésta es la mitad que v0.71.0 dejó a medias y que rompe la promesa por
+        debajo si se implementa el delta como se implementa siempre.
+
+        Un aviso que alguien APAGA sí mueve `updated_at`, así que un delta
+        normal lo trae. Pero **un aviso que VENCE no cambia ninguna fila**:
+        no hay UPDATE, solo pasa el día. Un delta escrito como
+        "¿qué filas cambiaron desde `since`?" no lo vuelve a mandar nunca, y
+        el vendedor se queda con el aviso vencido en pantalla para siempre.
+        Devolver `visible: false` no sirve de nada si la fila no entra en el
+        delta.
+
+        POR ESO EL DELTA INCLUYE TAMBIÉN LAS TRANSICIONES DE VIGENCIA: los
+        instantes en que la visibilidad de un aviso cambia SOLA, sin que
+        nadie lo toque. Son dos por aviso, las dos medianoches de Nueva York
+        donde empieza y termina la vigencia.
+
+        Vale igual para `starts_on`: un aviso programado para el lunes
+        tampoco se edita el lunes, y si el delta no lo trae, el vendedor no
+        lo ve hasta que alguien lo modifique por otra razón.
+
+        LA FORMA GENERAL, porque no es solo de este endpoint: un delta que se
+        apoya SOLO en una marca de modificación es ciego a todo cambio que
+        dependa del paso del tiempo. Cualquier campo que el servidor calcule
+        contra "hoy" tiene esta misma trampa.
 
         Los avisos van a TODOS los vendedores. No hay destinatarios por
         persona ni por zona — si algún día hace falta, es otro bloque.
@@ -15085,6 +15178,16 @@ components:
             ambiguo hace que alguien publique un aviso que desaparece un día
             antes de lo que quiso.
 
+            ⚠️ ★ v0.72.0 — UN RANGO INVERTIDO SE RECHAZA CON 400. Si
+            `ends_on` es anterior a `starts_on`, el aviso no se puede ver
+            NUNCA — y en la pantalla de la oficina se vería exactamente igual
+            que uno correcto: con su título, su texto y su interruptor en
+            activo. Alguien lo publicaría, esperaría que apareciera, y no
+            habría nada que mirar para entender por qué no aparece.
+
+            Es la clase de fallo que este contrato rechaza en la puerta en
+            vez de dejar pasar: no es un dato raro, es un dato imposible.
+
     Notice:
       type: object
       description: >
@@ -15143,6 +15246,19 @@ components:
                 cobertura: no dice cuántos faltan, porque este schema no sabe
                 cuántos vendedores hay ni cuáles estaban activos cuando se
                 publicó.
+
+                ⚠️ ★ v0.72.0 — Y SI ALGUIEN LO MUESTRA COMO PROPORCIÓN, EL
+                DENOMINADOR OBVIO ESTÁ MAL POR PARTIDA DOBLE. Medido en dev:
+                el espejo tiene 19 vendedores activos, pero solo 3 tienen
+                cuenta para entrar, y varios de los otros 16 NO SON PERSONAS
+                — son códigos de SAP como Admin, Bodega, Marketing o
+                Telemarketing.
+
+                O sea que "3 de 19" se lee como "casi nadie mira los avisos"
+                cuando en realidad son 3 de 3. El denominador correcto es
+                VENDEDORES CON CUENTA ACTIVA, y hoy ese número no lo expone
+                ningún endpoint. Hasta que exista, este campo se muestra como
+                un número y no como una fracción.
             created_by: { type: string }
             created_at: { type: string, format: date-time }
 
