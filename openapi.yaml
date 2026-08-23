@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.72.0
+  version: 0.73.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -121,6 +121,131 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.73.0 — B4: LA HISTORIA DEL PICKING Y LAS NOVEDADES DE BODEGA
+    ══════════════════════════════════════════════════════════════════════════
+
+    B4 le da a la app de bodega un menú inferior de tres entradas: Tareas
+    Actuales, Tareas Completadas y Novedades. La primera es solo de la app y
+    no toca este contrato. Las otras dos entran acá, juntas, porque llegan por
+    la misma pantalla nueva y separarlas obligaría a la app a adoptar dos
+    veces.
+
+    ─────────────────────────────────────────────────────────────────────────
+    PARTE 1 — TAREAS COMPLETADAS: `GET /picking/history`
+    ─────────────────────────────────────────────────────────────────────────
+
+    ★ LO QUE FALTABA NO ERA EL CONJUNTO, ERA LA FECHA
+      Medido: `GET /picking/my-trucks` no filtra por ningún estado, así que
+      los carriles ya cerrados YA VIAJAN hoy. Lo que no existía era el tiempo:
+      NINGUNA tabla de picking tiene una sola columna de fecha —ni el carril,
+      ni la recolección, ni los faltantes, ni el progreso por ítem—. No había
+      de qué inferirla.
+
+      Y la fecha del camión no sirve de sustituto, también medido: es NULL
+      mientras algún carril siga abierto, y cuando existe es el instante en
+      que cerró EL ÚLTIMO carril, compartida por los dos bodegueros. Para el
+      que terminó primero sería posterior a la real.
+
+    ⚠️⚠️ EL HALLAZGO QUE CAMBIÓ LA FORMA DEL BLOQUE
+      La tabla de carriles NO ES UNA TABLA DE HISTORIA. Reasignar sobrescribe
+      al bodeguero; desasignar borra la fila. Una pantalla de "lo que hice"
+      construida sobre ella mostraría el pasado SEGÚN QUIEN TENGA EL CARRIL
+      HOY: reasignar un carril ya cerrado movería la tarea terminada del
+      historial de uno al del otro, en silencio.
+
+      Hoy eso no es una mentira en pantalla, y se verificó: `/admin/
+      picking-board` muestra solo el picking EN CURSO, y nada en este contrato
+      afirma nada sobre el pasado del picking. B4 sería la PRIMERA superficie
+      que lo hace. Por eso se decide antes de que exista y no después.
+
+    ★ DECISIÓN: LA PANTALLA ES UN REGISTRO DE QUIÉN HIZO QUÉ
+      Decidido por Camilo, y fija la forma: cada cierre deja SU PROPIA
+      ENTRADA, escrita una sola vez cuando el carril pasa a CERRADO, con el
+      bodeguero guardado ADENTRO y no como referencia a la asignación. Una
+      entrada no cambia nunca más. Una columna en la tabla de carriles no
+      alcanzaba, porque la fila misma se sobrescribe y se borra.
+
+      Es la misma regla que en Dr1 con las facturas del pago de ruta: **la
+      estructura se pierde una sola vez.** Escribir la entrada hoy cuesta una
+      tabla; reconstruir mañana quién alistó qué es imposible.
+
+    ★ `history_starts_on`, PARA QUE UNA LISTA VACÍA NO MIENTA
+      La historia empieza el día que esta versión se despliega. Lo cerrado
+      antes no tiene entrada y no la va a tener nunca — rellenarla sería
+      inventar el dato. Sin decir desde cuándo hay registro, una consulta a
+      un rango anterior devuelve cero y se lee como "no trabajó" cuando lo
+      cierto es "no hay registro". Son dos cosas distintas y la pantalla tiene
+      que poder distinguirlas.
+
+    ★ `work_date` SE DERIVA DEL CIERRE, y no del arranque como en las rutas
+      No es una inconsistencia: una ruta tiene arranque propio y un carril no
+      tiene NINGUNA marca de arranque. Se usa lo único que hay, y queda
+      escrito que un carril cerrado a las 00:30 cuenta como del día nuevo.
+
+    ⏰ ADVERTENCIA DE HUSO, medida y válida para todo el proyecto
+      Todo se guarda en UTC (0 usos del reloj local contra 56 de UtcNow,
+      columnas sin offset, y una marca generada por el proceso desplegado a
+      0 s del UTC de la máquina). PERO la máquina de dev está en UTC-4, que en
+      agosto es EXACTAMENTE el huso de Nueva York. Un error de huso en una
+      consulta por fecha da VERDE en dev y aparece en el droplet, o en
+      noviembre cuando Nueva York pase a UTC-5 y la máquina no.
+
+      Consecuencia obligatoria: toda prueba de la franja nocturna CONGELA EL
+      RELOJ. No se confía en el ambiente.
+
+    ─────────────────────────────────────────────────────────────────────────
+    PARTE 2 — NOVEDADES: cuatro puertas del bodeguero y una de la oficina
+    ─────────────────────────────────────────────────────────────────────────
+
+    ★ LAS PUERTAS
+      `GET` y `POST /picking/notes` · `PUT` y `DELETE /picking/notes/{uuid}` ·
+      `GET /admin/warehouse-notes`. El bodeguero escribe, edita y borra LAS
+      SUYAS (403 si no lo son). La oficina solo lee.
+
+    ⚠️⚠️ UNA NOVEDAD NO ES UN FALTANTE
+      Es la línea más importante del bloque. El faltante está atado a un ítem
+      y a un camión y MUEVE EL ESTADO DEL PICKING. Una novedad no está atada a
+      nada y NO MUEVE NADA.
+
+      Si un bodeguero escribe "no había producto IT-9" como novedad, el camión
+      no se entera, el ítem no queda marcado y nadie reordena nada — y él va a
+      creer que reportó algo. La pantalla tiene que decirlo con esas palabras.
+      El parecido entre las dos cosas es justamente lo que las va a confundir.
+
+    ★ POR ESO TAMPOCO SE ATA A UN CAMIÓN
+      Un `truck_id` en la novedad la haría ver como un canal operativo de ese
+      camión, que es lo que ya es el faltante. Si la oficina termina
+      necesitando filtrar por camión, el campo es aditivo y se decide
+      entonces.
+
+    ★ SIN TÍTULO, a diferencia de un aviso
+      Un aviso lo redacta la oficina sentada y lo miran decenas de vendedores
+      en una lista, donde el título ahorra abrir cada uno. Una novedad la
+      escribe alguien de pie en la bodega, con una mano; ese campo se llenaría
+      con las primeras palabras del cuerpo. Agregarlo después es aditivo.
+
+    ★ EDITAR NO CAMBIA EL AUTOR NI `created_at`
+      Mueve `updated_at`, que hasta entonces era `null`. La oficina puede ver
+      que lo que lee no es lo que se escribió al principio. Misma decisión que
+      en los avisos: el efecto no se tapa, se hace mirable.
+
+      `updated_at` es nullable en vez de repetir `created_at` porque dos
+      marcas iguales obligan a INFERIR que no hubo edición, y esa inferencia
+      se rompe el día que una edición caiga dentro del mismo segundo.
+
+    ⚠️ BORRAR ES BORRAR, y la consecuencia se escribe en vez de descubrirse
+      La novedad desaparece también para la oficina, que puede haberla leído y
+      estar actuando sobre ella. No queda rastro de que existió. Se acepta
+      porque es lo que se pidió y porque una novedad es un mensaje, no un
+      registro contable. Si hace falta ver lo retirado, eso es un borrado
+      suave y es otro bloque.
+
+    ★ Y NO TIENE VIGENCIA A PROPÓSITO
+      Una novedad vale desde que se escribe hasta que se borra; nada cambia
+      con el paso del día. Eso la deja fuera de la trampa que costó v0.72.0.
+      Si algún día se le agrega vigencia, esa regla aplica entera.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.72.0 — UN DELTA CIEGO AL PASO DEL TIEMPO
@@ -10103,6 +10228,298 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /picking/history:
+    get:
+      tags: [picking]
+      summary: Los carriles que este bodeguero ya cerró
+      description: >
+        ★ NUEVO en v0.73.0 (B4). REQUIERE rol BODEGUERO. Devuelve SOLO los
+        carriles que cerró QUIEN PREGUNTA, más nuevos primero. Es la pantalla
+        "Tareas Completadas" de la app de bodega.
+
+        ★ POR QUÉ NO ALCANZABA `GET /picking/my-trucks`, y está medido: esa
+        ruta no filtra por ningún estado, así que el CONJUNTO de tareas
+        terminadas ya viajaba. Lo que no existía era LA FECHA — ninguna tabla
+        de picking tenía una sola columna de tiempo, ni del carril, ni de la
+        recolección, ni del progreso por ítem. No había de qué inferirla.
+
+        ⚠️⚠️ Y POR QUÉ ES UNA HISTORIA PROPIA Y NO UN FILTRO SOBRE LA
+        ASIGNACIÓN ACTUAL. La asignación de un carril se SOBRESCRIBE al
+        reasignar y se BORRA al desasignar. Una lista de "lo que hice"
+        construida sobre ella mostraría el pasado según quien tenga el carril
+        HOY: reasignar un carril ya cerrado movería la tarea terminada del
+        historial de un bodeguero al de otro, en silencio, y desasignarlo la
+        borraría del historial de todos.
+
+        Por eso cada cierre deja SU PROPIA ENTRADA, escrita una sola vez en el
+        instante en que el carril pasa a CERRADO, con el bodeguero que lo
+        cerró guardado ADENTRO y no como referencia a la asignación. Una
+        entrada de esta lista no cambia nunca más. Esta es la decisión de
+        Camilo: la pantalla es un REGISTRO DE QUIÉN HIZO QUÉ, no una
+        comodidad — y un registro que se reescribe solo no es un registro.
+
+        ⏰ `from` y `to` son días de Nueva York (regla global ⏰), igual que en
+        el resto del contrato. Sin ellos, los últimos 30 días.
+
+        ★ LO QUE ESTA RUTA NO ES: no es el detalle. Devuelve lo justo para
+        RECONOCER un trabajo terminado en una lista. No hay puerta de detalle
+        y eso es una decisión, no un olvido — hoy la app no muestra nada más
+        que "tu carril está cerrado" al abrir uno. NO es el hueco de "bandeja
+        sin detalle alcanzable" que este contrato ya pagó tres veces: aquel
+        era un detalle que EXISTÍA y no se podía volver a abrir. Acá el
+        detalle no existe todavía. El día que exista, entra con su puerta.
+      parameters:
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date }
+          description: Desde esta fecha (día de Nueva York). Por defecto, últimos 30 días.
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date }
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Página de carriles cerrados por este bodeguero
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  history_starts_on:
+                    type: string
+                    format: date
+                    nullable: true
+                    description: >
+                      ★ NUEVO en v0.73.0. El primer día (de Nueva York) del que
+                      este servidor CONSERVA historia de picking.
+
+                      ⚠️ EXISTE PARA QUE UNA LISTA VACÍA NO MIENTA. La historia
+                      empieza el día que se despliega esta versión: todo lo que
+                      se cerró antes NO tiene entrada y no va a aparecer nunca,
+                      porque no se puede reconstruir — no había fecha en ninguna
+                      parte de donde sacarla, y rellenarla con la del camión
+                      pondría el dato mal (esa marca es del ÚLTIMO carril que
+                      cerró y la comparten los dos bodegueros) o directamente
+                      nulo mientras el otro carril siga abierto. Está medido.
+
+                      Sin este campo, un rango anterior al despliegue devuelve
+                      cero entradas y se lee como "no trabajó" cuando lo cierto
+                      es "no hay registro". La pantalla tiene que decir cuál de
+                      las dos es, y solo puede hacerlo si el servidor le dice
+                      desde cuándo hay algo que mirar.
+
+                      `null` = todavía no hay ni una entrada.
+                  page: { type: integer }
+                  page_size: { type: integer }
+                  total: { type: integer }
+                  lanes:
+                    type: array
+                    items: { $ref: '#/components/schemas/ClosedLaneEntry' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /picking/notes:
+    get:
+      tags: [picking]
+      summary: Las novedades que escribió este bodeguero
+      description: >
+        ★ NUEVO en v0.73.0 (B4). REQUIERE rol BODEGUERO. Solo las de quien
+        pregunta, más nuevas primero. Es la pantalla "Novedades" de la app de
+        bodega.
+
+        ⚠️⚠️ UNA NOVEDAD NO ES UN FALTANTE, y esta es la línea más importante
+        del bloque. `POST /picking/trucks/{truck_id}/shortage` está atado a un
+        ítem y a un camión y MUEVE EL ESTADO DEL PICKING. Una novedad no está
+        atada a nada y NO MUEVE NADA: es un mensaje de la bodega a la oficina.
+
+        Si un bodeguero escribe "no había producto IT-9" como novedad, el
+        camión NO se entera, el ítem no queda marcado y nadie reordena nada.
+        Va a creer que reportó algo. La pantalla que ofrezca escribir una
+        novedad tiene que decirlo con esas palabras, porque el parecido entre
+        las dos cosas es exactamente lo que hace que se confundan.
+
+        ★ Y POR ESO TAMPOCO SE ATA A UN CAMIÓN. Poner un `truck_id` en una
+        novedad la haría ver como un canal operativo de ese camión, que es
+        justamente lo que ya es el faltante. Si algún día la oficina necesita
+        filtrar por camión, agregar el campo es aditivo y se decide entonces.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Página de novedades de este bodeguero
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  page: { type: integer }
+                  page_size: { type: integer }
+                  total: { type: integer }
+                  notes:
+                    type: array
+                    items: { $ref: '#/components/schemas/WarehouseNote' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [picking]
+      summary: Escribir una novedad
+      description: >
+        ★ NUEVO en v0.73.0 (B4). REQUIERE rol BODEGUERO. El autor sale DEL
+        TOKEN y no del cuerpo — una novedad es un hecho de quien la escribió,
+        igual que un aviso marcado como visto es un hecho de quien lo vio. No
+        hay forma de escribir una novedad a nombre de otro.
+
+        La regla global 👤 no aplica acá y conviene decir por qué, para que
+        nadie la invoque de más: esa regla habla de a qué VENDEDOR pertenece
+        un documento, y lo decide el cliente. Una novedad no es un documento
+        de nadie más que de quien la escribe.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WarehouseNoteWrite' }
+      responses:
+        '201':
+          description: Novedad creada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WarehouseNote' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /picking/notes/{note_uuid}:
+    put:
+      tags: [picking]
+      summary: Editar una novedad propia
+      description: >
+        ★ NUEVO en v0.73.0 (B4). REQUIERE rol BODEGUERO, y la novedad debe ser
+        SUYA → 403 si no. Un bodeguero no edita la novedad de otro, y la
+        oficina no edita ninguna: solo lee.
+
+        ★ EDITAR NO CAMBIA EL AUTOR NI `created_at`. Cambia el texto y mueve
+        `updated_at`, que hasta ese momento era `null`. Así la oficina puede
+        ver que lo que está leyendo no es lo que se escribió al principio —
+        es la misma decisión que en los avisos: el efecto no se tapa, se hace
+        mirable.
+      parameters:
+        - name: note_uuid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/WarehouseNoteWrite' }
+      responses:
+        '200':
+          description: Novedad actualizada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WarehouseNote' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [picking]
+      summary: Borrar una novedad propia
+      description: >
+        ★ NUEVO en v0.73.0 (B4). REQUIERE rol BODEGUERO, y la novedad debe ser
+        SUYA → 403 si no.
+
+        ⚠️ BORRAR ES BORRAR, Y LA CONSECUENCIA SE ESCRIBE EN VEZ DE
+        DESCUBRIRSE: la novedad desaparece también para la oficina, que puede
+        haberla leído y estar actuando sobre ella. No queda rastro de que
+        existió.
+
+        Se acepta así porque es lo que se pidió —el bodeguero edita y borra
+        las suyas— y porque una novedad es un mensaje, no un registro
+        contable. Si algún día resulta que la oficina necesita ver que algo se
+        retiró, eso es un borrado suave y es otro bloque, no un ajuste de
+        este. Queda dicho para que la diferencia sea una decisión y no un
+        descubrimiento.
+
+        No confundir con los avisos, donde desactivar y eliminar son DOS
+        verbos: un aviso se apaga porque dejó de aplicar y su historia de
+        vistos vale. Una novedad no tiene historia que conservar.
+      parameters:
+        - name: note_uuid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204':
+          description: Novedad borrada
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/warehouse-notes:
+    get:
+      tags: [picking-admin]
+      summary: Las novedades de la bodega, de todos los bodegueros
+      description: >
+        ★ NUEVO en v0.73.0 (B4). REQUIERE rol ADMIN. Puramente lectura: la
+        oficina lee las novedades, no las escribe, no las edita y no las
+        borra. Es el otro extremo del canal.
+
+        ⏰ `from` y `to` son días de Nueva York.
+
+        ★ DEVUELVE EL MISMO `WarehouseNote` que ve el bodeguero, a propósito.
+        Un segundo schema parecido para la misma cosa es como empiezan a
+        divergir dos pantallas que tienen que decir lo mismo.
+
+        ⚠️ ESTA LISTA MUESTRA LO QUE EXISTE AHORA. Una novedad que el
+        bodeguero borró no aparece, y no hay forma de saber que estuvo. Ver
+        `DELETE /picking/notes/{note_uuid}`.
+
+        ★ SOLO ADMIN por ahora, y es el mínimo deliberado: no se sabe todavía
+        quién de la oficina necesita leerlas. Ampliar el rol después es
+        aditivo; cerrarlo no lo es.
+      parameters:
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date }
+          description: Desde esta fecha (día de Nueva York). Por defecto, últimos 30 días.
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date }
+        - name: worker_username
+          in: query
+          required: false
+          schema: { type: string }
+          description: >
+            Filtra por un bodeguero. El valor es el `username` que devuelve
+            `GET /admin/warehouse-workers`.
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Página de novedades de bodega
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  page: { type: integer }
+                  page_size: { type: integer }
+                  total: { type: integer }
+                  notes:
+                    type: array
+                    items: { $ref: '#/components/schemas/WarehouseNote' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /picking/trucks/{truck_id}/start:
     post:
       tags: [picking]
@@ -15130,6 +15547,144 @@ components:
         total_orders: { type: integer }
         delivered_count: { type: integer }
         not_delivered_count: { type: integer }
+
+    ClosedLaneEntry:
+      type: object
+      description: >
+        ★ NUEVO en v0.73.0 (B4). UN CARRIL CERRADO por este bodeguero, con lo
+        justo para reconocerlo en una lista.
+
+        ⚠️ ES UNA ENTRADA DE HISTORIA, NO UNA VISTA DE LA ASIGNACIÓN ACTUAL.
+        Se escribe una sola vez, en el instante en que el carril pasa a
+        CERRADO, y no vuelve a cambiar. Reasignar el carril a otro bodeguero
+        NO mueve esta entrada; desasignarlo NO la borra. Es exactamente la
+        diferencia que justifica que el bloque exista.
+      properties:
+        truck_id:
+          type: string
+          format: uuid
+          description: El camión de ese trabajo.
+        truck_name:
+          type: string
+          nullable: true
+          description: >
+            ⚠️ ES EL NOMBRE ACTUAL DEL CAMIÓN, NO UNA COPIA HISTÓRICA. Si
+            alguien lo renombra, esta lista muestra el nombre nuevo también
+            para el trabajo viejo. Es la misma decisión que en
+            `ClosedRouteEntry` y se dice acá igual, para que nadie lea la
+            entrada entera como congelada: lo congelado es QUIÉN cerró y
+            CUÁNDO; el nombre es una etiqueta viva.
+        lane:
+          $ref: '#/components/schemas/PickingLane'
+        closed_at:
+          type: string
+          format: date-time
+          description: >
+            El instante en que el carril quedó CERRADO. Es el dato que no
+            existía en ninguna tabla de picking antes de esta versión.
+
+            NO es nullable: una entrada de historia sin su instante de cierre
+            no tendría por qué existir, porque el cierre es lo que la crea.
+            Los carriles cerrados ANTES de esta versión no tienen entrada —
+            no se rellenan con una fecha inventada. Ver `history_starts_on`
+            en `GET /picking/history`.
+        work_date:
+          type: string
+          format: date
+          description: >
+            El DÍA TRABAJADO, como día calendario de America/New_York derivado
+            de `closed_at` (regla global ⏰). Es la etiqueta con la que agrupa
+            la pantalla; la identidad de la entrada es `truck_id` + `lane`.
+
+            ★ SE DERIVA DEL CIERRE, y eso es DISTINTO de `ClosedRouteEntry`,
+            que deriva su `route_date` del ARRANQUE. La diferencia es
+            deliberada y no una inconsistencia: una ruta tiene un arranque
+            propio que el driver reconoce como "su jornada", y un carril no
+            tiene ninguna marca de arranque — no existe en la base. Se usa lo
+            único que hay. Consecuencia que la pantalla debe asumir: un carril
+            que se cierra a las 00:30 cuenta como del día nuevo.
+        order_count:
+          type: integer
+          description: Cuántas órdenes tenía el camión.
+        stop_count:
+          type: integer
+          description: Cuántas paradas (clientes) tenía el camión.
+        item_count:
+          type: integer
+          description: >
+            Cuántos ítems distintos tenía QUE RECOGER ESTE CARRIL — no el
+            camión completo. Un carril REGULAR y uno FROZEN del mismo camión
+            traen números distintos, y eso es correcto.
+
+    WarehouseNoteWrite:
+      type: object
+      required: [body]
+      description: >
+        ★ NUEVO en v0.73.0 (B4). Lo que el bodeguero manda al escribir o
+        editar una novedad.
+      properties:
+        body:
+          type: string
+          minLength: 1
+          description: >
+            El texto de la novedad.
+
+            ★ NO HAY TÍTULO, a diferencia de un aviso, y es una decisión: un
+            aviso lo redacta la oficina sentada y lo van a ver decenas de
+            vendedores en una lista, donde un título ahorra abrir cada uno.
+            Una novedad la escribe alguien de pie en la bodega, con una mano,
+            y un campo de título ahí se llena con las primeras palabras del
+            cuerpo. Agregar un título opcional después es aditivo si resulta
+            que hace falta.
+
+    WarehouseNote:
+      type: object
+      description: >
+        ★ NUEVO en v0.73.0 (B4). Una novedad de la bodega hacia la oficina.
+
+        ⚠️ NO ES UN AVISO (`Notice`) y no comparte nada con él salvo la
+        palabra "mensaje": va en la dirección contraria, la escribe el
+        bodeguero y no la oficina, no tiene vigencia, no tiene destinatarios y
+        nadie la marca como vista.
+
+        ⚠️ NO ES UN FALTANTE. No mueve el estado de ningún camión. Ver
+        `GET /picking/notes`.
+
+        ★ Y NO TIENE VIGENCIA A PROPÓSITO. Una novedad vale desde que se
+        escribe hasta que se borra, y nada cambia con el paso del día. Eso la
+        deja fuera de la trampa que costó v0.72.0 — si algún día se le agrega
+        una vigencia, la regla de esa versión aplica entera: un delta que se
+        apoya solo en una marca de modificación es ciego a todo cambio que
+        dependa del paso del tiempo.
+      properties:
+        note_uuid: { type: string, format: uuid }
+        body: { type: string }
+        created_by_username:
+          type: string
+          description: >
+            El bodeguero que la escribió. Sale del token al crearla y NO
+            cambia al editarla. Es el mismo `username` de
+            `GET /admin/warehouse-workers`.
+        created_by_name:
+          type: string
+          nullable: true
+          description: >
+            Su nombre para mostrar. `null` si el usuario no tiene uno cargado
+            — y en ese caso la pantalla muestra el `username`, no un espacio
+            en blanco. Nulo y vacío no significan lo mismo.
+        created_at: { type: string, format: date-time }
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            Cuándo se editó por última vez. `null` = NUNCA SE EDITÓ, y eso es
+            un hecho, no un dato que falte.
+
+            Se eligió nullable en vez de repetir `created_at` justamente por
+            eso: dos marcas iguales obligan a INFERIR que no hubo edición, y
+            una inferencia se rompe el día que una edición ocurra dentro del
+            mismo segundo.
 
     NoticeWrite:
       type: object
