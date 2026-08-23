@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.70.0
+  version: 0.71.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -121,6 +121,82 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.71.0 — AVISOS DE LA OFICINA A LOS VENDEDORES (N1)
+    ══════════════════════════════════════════════════════════════════════════
+
+    Concepto nuevo. Antes de esto el contrato no tenía NADA parecido a un
+    aviso, un anuncio ni una notificación — se verificó buscando por schema y
+    por ruta.
+
+    ★ LAS CINCO PUERTAS
+      · `GET /sync/notices` — el vendedor los baja, con el resto de `/sync`.
+      · `POST /notices/{uuid}/seen` — el vendedor marca que lo vio.
+      · `GET` y `POST /admin/notices` — la oficina los lista y los crea.
+      · `PUT` y `DELETE /admin/notices/{uuid}` — editar y eliminar.
+      · `GET /admin/notices/{uuid}/seen` — quién lo marcó y cuándo.
+
+    ★ ENTRAN POR `/sync` PORQUE EL VENDEDOR TRABAJA SIN SEÑAL
+      Un aviso que solo existe con conexión no le sirve a alguien que está en
+      la calle. Se descargan con el catálogo y los clientes, y quedan en el
+      teléfono.
+
+    ⚠️ Y VIAJAN TAMBIÉN CUANDO DEJAN DE ESTAR VIGENTES
+      Es la parte que no es obvia. Si el delta devolviera solo los visibles,
+      un aviso que se desactiva o vence mientras el vendedor está sin señal
+      se quedaría en su teléfono para siempre: **la ausencia de un registro
+      no comunica un cambio**. Por eso viaja `visible`, que puede llegar en
+      `false`.
+
+    ★ LA VISIBILIDAD LA RESUELVE EL SERVIDOR
+      La vigencia se evalúa contra el día de Nueva York (regla global ⏰) y un
+      teléfono puede estar en otra zona o con la hora cambiada. Si cada app
+      lo calculara, dos vendedores verían avisos distintos el mismo día.
+
+    ★ ACTIVO Y VIGENCIA SON DOS COSAS
+      Un aviso puede estar activo y fuera de fechas, o dentro de fechas y
+      apagado; se ve solo si se cumplen las dos. Son dos controles porque
+      responden a dos preguntas distintas —"¿esto ya no va más?" y "¿esto
+      vale para estas fechas?"— y meterlas en un solo campo obliga a borrar
+      fechas para apagar algo.
+
+      Y el último día CUENTA: un aviso que termina el 30 se ve el 30. Dejarlo
+      ambiguo hace que alguien publique algo que desaparece un día antes de
+      lo que quiso.
+
+    ⚠️ EDITAR NO BORRA LOS "VISTO" — DECIDIDO, CON SU CONSECUENCIA ESCRITA
+      Es la decisión de Camilo. La consecuencia hay que saberla: un vendedor
+      puede figurar como que vio un texto que nunca leyó, porque marcó la
+      versión anterior.
+
+      NO SE TAPA, SE HACE VISIBLE: cada marca conserva su `seen_at` y el
+      aviso su `updated_at`, así que la oficina puede ver quién marcó ANTES
+      del último cambio. La regla no cambia — lo que cambia es que su efecto
+      se puede mirar en vez de suponerse. Por eso la pantalla de la oficina
+      dice "quién lo MARCÓ", no "quién lo leyó".
+
+    ★ DESACTIVAR Y ELIMINAR SON DOS VERBOS
+      Desactivar deja de mostrarlo y conserva quién lo vio. Eliminar borra el
+      aviso y su historia. Si lo que se quiere es dejar de mostrarlo, se
+      desactiva; eliminar es para el que se creó por error. Una operación que
+      hace dos cosas y muestra una es un error esperando.
+
+    ★ `seen_count` ES UN CONTEO, NO UNA COBERTURA
+      Dice cuántos marcaron, no cuántos faltan. Quién NO lo marcó se deduce
+      contra la lista de vendedores, y a propósito no se arma en esta
+      respuesta: no sabe cuántos vendedores hay hoy ni cuáles estaban activos
+      cuando el aviso se publicó. Un número que parece cobertura y no lo es
+      se lee mal una sola vez y ya.
+
+    ★ LO QUE N1 NO ES
+      No es B4. B4 son las NOVEDADES de bodega hacia la oficina: otra
+      entidad, otra dirección y otra vida. Comparten la palabra "mensaje" y
+      nada más.
+
+      Y no tiene destinatarios: los avisos van a TODOS los vendedores. Si
+      algún día hacen falta por persona o por zona, es otro bloque y otra
+      decisión.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.70.0 — LAS FACTURAS DEL PAGO DE RUTA, COMO LISTA (Dr1)
@@ -4952,6 +5028,237 @@ paths:
               schema: { $ref: '#/components/schemas/SapStatus' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+
+  /sync/notices:
+    get:
+      tags: [sync-down]
+      summary: Los avisos de la oficina para este vendedor
+      description: >
+        ★ NUEVO en v0.71.0 (N1). REQUIERE rol VENDEDOR o
+        VENDEDOR_INSTITUCIONAL. Mismo patrón que el resto de `/sync`: el
+        vendedor los baja y trabaja sin conexión.
+
+        ★ POR QUÉ ENTRA POR `/sync` Y NO POR UN ENDPOINT SUELTO: un aviso que
+        solo existe con señal no le sirve a alguien que trabaja en la calle.
+        Se descargan con el resto y quedan en el teléfono.
+
+        ⚠️ DEVUELVE TAMBIÉN LOS QUE DEJARON DE ESTAR VIGENTES, y esto es lo
+        que hace que el delta funcione. Si solo devolviera los visibles, un
+        aviso que se desactiva o que vence mientras el vendedor está sin
+        señal se quedaría en su teléfono para siempre: la AUSENCIA de un
+        registro no puede comunicar un cambio. Por eso viaja
+        `visible`, y el cliente borra o esconde los que llegan en `false`.
+
+        Los avisos van a TODOS los vendedores. No hay destinatarios por
+        persona ni por zona — si algún día hace falta, es otro bloque.
+      parameters:
+        - $ref: '#/components/parameters/Since'
+      responses:
+        '200':
+          description: Avisos creados o modificados desde `since`
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  notices:
+                    type: array
+                    items: { $ref: '#/components/schemas/Notice' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /notices/{notice_uuid}/seen:
+    post:
+      tags: [sync-up]
+      summary: El vendedor marca un aviso como visto
+      description: >
+        ★ NUEVO en v0.71.0 (N1). REQUIERE rol VENDEDOR o
+        VENDEDOR_INSTITUCIONAL. Registra que ESTE vendedor lo vio.
+
+        IDEMPOTENTE POR NATURALEZA: marcar dos veces es lo mismo que marcar
+        una. No es un contador, es pertenencia a un conjunto — así que un
+        reintento tras perderse la respuesta no puede ensuciar nada. Devuelve
+        200 en los dos casos.
+
+        Se puede encolar sin conexión y subir después, como el resto de
+        `sync-up`. La marca conserva CUÁNDO la puso el vendedor, no cuándo
+        llegó al servidor (ver `NoticeSeen.seen_at`).
+      parameters:
+        - name: notice_uuid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                seen_at:
+                  type: string
+                  format: date-time
+                  nullable: true
+                  description: >
+                    Cuándo lo vio de verdad. Si se omite, el servidor usa el
+                    momento en que llegó. Importa para el offline: un aviso
+                    visto en la calle a las 9 y sincronizado a las 6 de la
+                    tarde se vio a las 9.
+      responses:
+        '200':
+          description: Marcado como visto (o ya lo estaba)
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/notices:
+    get:
+      tags: [admin]
+      summary: Los avisos, para la oficina
+      description: >
+        ★ NUEVO en v0.71.0 (N1). REQUIERE rol ADMIN. Devuelve TODOS —
+        vigentes, vencidos y desactivados— porque esta es la pantalla desde
+        donde se administran, no la del vendedor.
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Página de avisos
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  page: { type: integer }
+                  page_size: { type: integer }
+                  total: { type: integer }
+                  notices:
+                    type: array
+                    items: { $ref: '#/components/schemas/AdminNotice' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [admin]
+      summary: Crear un aviso
+      description: ★ NUEVO en v0.71.0 (N1). REQUIERE rol ADMIN.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NoticeWrite' }
+      responses:
+        '201':
+          description: Aviso creado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminNotice' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/notices/{notice_uuid}:
+    put:
+      tags: [admin]
+      summary: Editar un aviso
+      description: >
+        ★ NUEVO en v0.71.0 (N1). REQUIERE rol ADMIN. Reemplaza el contenido
+        completo — un aviso se edita guardándolo de nuevo.
+
+        ⚠️ EDITAR NO BORRA LOS "VISTO" ANTERIORES, y es una decisión tomada a
+        propósito. La consecuencia hay que saberla: un vendedor puede figurar
+        como que vio un texto que nunca leyó, porque marcó la versión previa.
+
+        NO SE TAPA, SE HACE VISIBLE: el aviso conserva `updated_at` y cada
+        marca conserva su `seen_at`, así que la oficina puede ver quién marcó
+        ANTES del último cambio. La regla no cambia; lo que cambia es que su
+        efecto se puede mirar en vez de suponerse.
+      parameters:
+        - name: notice_uuid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/NoticeWrite' }
+      responses:
+        '200':
+          description: Aviso actualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AdminNotice' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [admin]
+      summary: Eliminar un aviso
+      description: >
+        ★ NUEVO en v0.71.0 (N1). REQUIERE rol ADMIN. Lo elimina de verdad,
+        junto con sus marcas de visto.
+
+        ⚠️ DESACTIVAR NO ES ELIMINAR, y son dos verbos porque son dos cosas.
+        Desactivar deja de mostrarlo y CONSERVA quién lo vio; eliminar borra
+        el aviso y su historia. Si lo que se quiere es dejar de mostrarlo,
+        se desactiva — eliminar es para el que se creó por error.
+      parameters:
+        - name: notice_uuid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Eliminado }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/notices/{notice_uuid}/seen:
+    get:
+      tags: [admin]
+      summary: Quién marcó este aviso como visto
+      description: >
+        ★ NUEVO en v0.71.0 (N1). REQUIERE rol ADMIN.
+
+        ⚠️ ES "QUIÉN LO MARCÓ", NO "QUIÉN LO LEYÓ", y la diferencia importa
+        cuando el aviso se editó: una marca puesta antes del último cambio es
+        sobre el texto viejo. Por eso viaja `seen_at` de cada uno y
+        `updated_at` del aviso — con los dos, la oficina distingue sin
+        adivinar.
+
+        Devuelve solo a los que lo marcaron. Quién NO lo marcó se deduce
+        contra la lista de vendedores, y a propósito no se arma acá: esta
+        respuesta no sabe cuántos vendedores hay hoy ni cuáles estaban
+        activos cuando el aviso se publicó.
+      parameters:
+        - name: notice_uuid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Marcas de visto de ese aviso
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  notice_uuid: { type: string, format: uuid }
+                  updated_at:
+                    type: string
+                    format: date-time
+                    description: >
+                      Cuándo se editó el aviso por última vez. Está acá para
+                      poder comparar contra cada `seen_at` sin pedir otra
+                      cosa.
+                  seen_by:
+                    type: array
+                    items: { $ref: '#/components/schemas/NoticeSeen' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /sync/catalog:
     get:
@@ -14730,6 +15037,144 @@ components:
         total_orders: { type: integer }
         delivered_count: { type: integer }
         not_delivered_count: { type: integer }
+
+    NoticeWrite:
+      type: object
+      required: [title, body, active]
+      description: >
+        ★ NUEVO en v0.71.0 (N1). Lo que la oficina manda al crear o editar un
+        aviso.
+      properties:
+        title:
+          type: string
+          minLength: 1
+          description: El título, que es lo que el vendedor ve primero en su Home.
+        body:
+          type: string
+          minLength: 1
+          description: El texto del aviso.
+        active:
+          type: boolean
+          description: >
+            El interruptor. `false` lo saca de la vista de los vendedores sin
+            borrarlo ni perder quién lo vio.
+
+            ⚠️ ES INDEPENDIENTE DE LA VIGENCIA, y conviene no confundirlos:
+            un aviso puede estar activo y fuera de fechas, o dentro de fechas
+            y apagado. Se ve solo si se cumplen LAS DOS cosas. Son dos
+            controles porque responden a dos preguntas distintas —"¿esto ya
+            no va más?" y "¿esto vale para estas fechas?"— y meterlos en uno
+            obliga a borrar fechas para apagar algo.
+        starts_on:
+          type: string
+          format: date
+          nullable: true
+          description: >
+            Desde qué día se muestra, como día calendario de
+            America/New_York (regla global ⏰). `null` = desde siempre.
+        ends_on:
+          type: string
+          format: date
+          nullable: true
+          description: >
+            Hasta qué día se muestra, INCLUSIVE, como día calendario de
+            America/New_York. `null` = sin vencimiento.
+
+            El último día CUENTA: un aviso que termina el 30 se ve el 30. Es
+            como lo lee cualquiera que escriba una fecha de fin, y dejarlo
+            ambiguo hace que alguien publique un aviso que desaparece un día
+            antes de lo que quiso.
+
+    Notice:
+      type: object
+      description: >
+        ★ NUEVO en v0.71.0 (N1). El aviso como lo recibe la APP DEL VENDEDOR
+        por `/sync/notices`.
+      properties:
+        notice_uuid: { type: string, format: uuid }
+        title: { type: string }
+        body: { type: string }
+        visible:
+          type: boolean
+          description: >
+            Si el vendedor tiene que verlo AHORA. Lo resuelve el SERVIDOR
+            combinando `active` con la vigencia.
+
+            ★ POR QUÉ LO RESUELVE EL SERVIDOR Y NO LA APP: la vigencia se
+            evalúa contra el día de Nueva York (regla global ⏰), y un
+            teléfono puede estar en otra zona o con la hora cambiada. Si cada
+            app lo calculara, dos vendedores verían avisos distintos el mismo
+            día. Se calcula una vez, donde el calendario es el del negocio.
+
+            ⚠️ PUEDE LLEGAR EN `false`, y para eso está: es la única forma de
+            que la app sepa que un aviso que YA TENÍA dejó de ir. La ausencia
+            de un registro en un delta no comunica nada.
+        seen:
+          type: boolean
+          description: >
+            Si ESTE vendedor ya lo marcó. Viaja resuelto para que la app no
+            tenga que cruzar dos listas ni recordar lo que marcó antes de
+            perder la caché.
+        updated_at:
+          type: string
+          format: date-time
+          description: Cuándo se creó o se editó por última vez.
+
+    AdminNotice:
+      allOf:
+        - $ref: '#/components/schemas/Notice'
+        - type: object
+          description: >
+            ★ NUEVO en v0.71.0 (N1). El aviso como lo ve la OFICINA: lo mismo
+            que ve el vendedor, más lo que solo importa para administrarlo.
+
+            `seen` acá es el del ADMIN que pregunta y no significa nada útil
+            —él no es destinatario—; lo que la oficina quiere es
+            `seen_count`, y el detalle en
+            `GET /admin/notices/{notice_uuid}/seen`.
+          properties:
+            active: { type: boolean }
+            starts_on: { type: string, format: date, nullable: true }
+            ends_on: { type: string, format: date, nullable: true }
+            seen_count:
+              type: integer
+              description: >
+                Cuántos vendedores lo marcaron. Es un conteo, no una
+                cobertura: no dice cuántos faltan, porque este schema no sabe
+                cuántos vendedores hay ni cuáles estaban activos cuando se
+                publicó.
+            created_by: { type: string }
+            created_at: { type: string, format: date-time }
+
+    NoticeSeen:
+      type: object
+      description: >
+        ★ NUEVO en v0.71.0 (N1). Una marca de visto.
+      properties:
+        salesperson_code:
+          type: string
+          description: >
+            El vendedor que lo marcó. Sale del token de quien marca — acá SÍ,
+            porque un aviso visto es un hecho de QUIEN LO VIO, no del
+            cliente. La regla global 👤 habla de a quién PERTENECE un
+            documento; esto no es un documento de nadie.
+        salesperson_name:
+          type: string
+          nullable: true
+          description: >
+            Resuelto desde el espejo de vendedores de SAP, mismo criterio que
+            en el resto del contrato. `null` si el código quedó huérfano.
+        seen_at:
+          type: string
+          format: date-time
+          description: >
+            Cuándo lo marcó el vendedor, NO cuándo llegó al servidor. Un
+            aviso visto en la calle a las 9 y sincronizado a las 6 de la
+            tarde se vio a las 9.
+
+            ⚠️ ES EL CAMPO QUE HACE LEGIBLE LA DECISIÓN DE QUE EDITAR NO
+            BORRE LOS VISTO: comparado con el `updated_at` del aviso, dice si
+            esa persona marcó el texto viejo o el nuevo.
 
     RouteSummary:
       type: object
