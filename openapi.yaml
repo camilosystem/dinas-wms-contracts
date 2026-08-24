@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.76.0
+  version: 0.77.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -121,6 +121,105 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.77.0 — EL CUPO DE VENTA CONTROLADA PASA A SER POR VENDEDOR
+    ══════════════════════════════════════════════════════════════════════════
+
+    D8–D10, el último bloque de la segunda ola. Cuatro rutas nuevas, tres
+    schemas. Ninguna forma existente cambia, pero SÍ CAMBIA UN COMPORTAMIENTO,
+    y está escrito abajo con todas las letras.
+
+    ★ EL TOPE DEJA DE SER DEL ÍTEM Y PASA A SER DE LA RELACIÓN
+      Hasta v0.76.0 `Item.controlled_sale_limit` era un número por ítem, igual
+      para todos los vendedores. Ahora el tope vive en `ControlledSaleQuota`,
+      por par (ítem, vendedor), con vigencia.
+
+      La razón la nombró el agente del middleware al medir: **el tope estaba
+      en `Items`, que es tabla del espejo de SAP, y un tope por vendedor no
+      cabe ahí — es una relación, no un atributo del ítem.** El campo viejo se
+      conserva (quitarlo rompería a quien lo lea) pero YA NO DECIDE NADA.
+
+    ⚠️⚠️ EL CAMBIO DE COMPORTAMIENTO, para que no se descubra en la calle
+      **Marcar un ítem como controlado ya no hace nada por sí solo.** Un
+      vendedor sin cupo para ese ítem NO TIENE TOPE. Al desplegar esta
+      versión, los dos ítems que hoy están controlados dejan de avisar hasta
+      que se les carguen cupos.
+
+      Es la decisión de negocio, tomada así a propósito: nadie queda limitado
+      sin que alguien lo haya decidido para él.
+
+    ⚠️⚠️ Y SU COROLARIO, QUE ES CONTRAINTUITIVO
+      **Quitar un cupo NO restringe: LIBERA.** Y un cupo que VENCE tampoco
+      restringe: libera. Quien ponga una fecha de fin esperando que a partir
+      de ahí "ya no pueda vender" está pidiendo lo contrario de lo que va a
+      pasar.
+
+      Para que no pueda vender se carga un cupo en CERO, que sí es un tope.
+      **Cero y "sin cupo" son opuestos**, y es la distinción más fácil de
+      equivocar de todo el bloque. La pantalla de borrar tiene que decirlo
+      antes de ejecutar, no después.
+
+    ★ `GET /sync/controlled-sale` — Y POR QUÉ NO VA EN EL CATÁLOGO
+      Medido: `GET /sync/catalog` devuelve HOY LA MISMA RESPUESTA PARA TODOS
+      —su consulta ni siquiera recibe el vendedor—, así que es compartible.
+      Meterle un saldo por vendedor lo convertiría en N respuestas distintas.
+
+      El peso nunca fue el problema: el saldo de los ítems controlados pesa
+      0,06% del catálogo (118 bytes sobre 188 KB). El costo era estructural, y
+      esa distinción solo apareció porque se pidió el número en vez de una
+      impresión.
+
+    ⚠️ ESE ENDPOINT NO TIENE `since` Y NO LO VA A TENER
+      El saldo cambia SOLO: basta con que una orden se facture o se rechace
+      del otro lado, sin que ninguna fila de este vendedor se modifique. Un
+      delta apoyado en una marca de modificación es ciego exactamente a eso —
+      es la trampa de v0.72.0, y acá se evita por construcción en vez de
+      corregirse después. Lo mismo vale para la vigencia: un cupo que vence no
+      cambia ninguna fila.
+
+    ⚠️ EL SALDO LLEGA VIEJO, Y SE DICE
+      No hay forma de que no llegue viejo. Por eso viaja `as_of` y la pantalla
+      tiene que decir de cuándo es el número. Un saldo presentado como si
+      fuera del momento es PEOR que no mostrarlo: el vendedor decide creyendo
+      que mira el presente. "Hace 40 minutos" no arruina el aviso, lo hace
+      honesto.
+
+    ★ DOS COSAS DISTINTAS QUE HASTA HOY COMPARTÍAN NOMBRE
+      Lo señaló el agente del middleware y el contrato lo adopta:
+
+      · `OrderDetail.controlled_sale_warnings` es una FOTO CONGELADA de
+        cuando se tomó el pedido. No se recalcula nunca. Dice QUÉ PASÓ.
+      · `ControlledSaleBalance` y `ControlledSaleQuota.open_quantity` son
+        números VIVOS, calculados al leer. Dicen CÓMO ESTÁ HOY.
+
+      Son la propiedad contraria una de la otra, y por eso llevan nombres
+      distintos. Cambiar un cupo NO toca los avisos ya guardados: un tope que
+      se sube hoy no vuelve correcto un pedido de ayer.
+
+    ⚠️ 👤 EL CUPO SE VALIDA CONTRA EL ESPEJO, NO CONTRA LAS CUENTAS
+      Y acá la regla global 👤 dejó de ser teórica: **el único caso real de
+      venta controlada en dev pertenece a un vendedor que NO tiene cuenta de
+      login** —7 unidades abiertas contra un tope de 5—. Si el cupo se validara
+      contra la tabla de cuentas, a ese vendedor no se le podría cargar uno, y
+      es precisamente el que lo necesita.
+
+      No va a ver el aviso en la app porque no entra a la app. Lo verá la
+      oficina en el pedido. El cupo no pierde sentido por eso; lo que no tiene
+      sentido es impedir cargarlo.
+
+    ★ SIN CUPOS SOLAPADOS para el mismo par (ítem, vendedor) → 400
+      Con solapamiento, "el tope de hoy" dejaría de ser una pregunta con una
+      sola respuesta y el servidor tendría que elegir por un criterio que
+      nadie escribió. Varios cupos del mismo par en periodos DISTINTOS sí se
+      permiten —uno de temporada y otro normal—, y por eso la identidad es
+      `quota_uuid` y no el par. Lo verifica el servidor: que la pantalla lo
+      evite no alcanza.
+
+    ★ LO QUE NO CAMBIA
+      AVISA, NO BLOQUEA. El pedido que excede entra igual y queda marcado. Y
+      un pedido tomado dentro de la vigencia que se aprueba después NO se
+      vuelve a evaluar: su aviso ya está congelado.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.76.0 — EL `since` DE LOS AVISOS ERA DECORATIVO
@@ -5665,6 +5764,196 @@ paths:
                   seen_by:
                     type: array
                     items: { $ref: '#/components/schemas/NoticeSeen' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /sync/controlled-sale:
+    get:
+      tags: [sync-down]
+      summary: Los cupos de venta controlada de este vendedor, con su saldo
+      description: >
+        ★ NUEVO en v0.77.0 (D8–D10). REQUIERE rol VENDEDOR o
+        VENDEDOR_INSTITUCIONAL. Devuelve SOLO los cupos de quien pregunta.
+
+        ★ POR QUÉ NO VA DENTRO DE `GET /sync/catalog`, y está medido: ese
+        endpoint devuelve HOY LA MISMA RESPUESTA PARA TODOS —su consulta no
+        recibe el vendedor— así que es cacheable y compartible entre
+        dispositivos. Meterle un saldo por vendedor lo convertiría en N
+        respuestas distintas y se perdería todo eso. El peso no era el
+        problema: el saldo de los ítems controlados pesa 0,06% del catálogo.
+        El problema era estructural.
+
+        ⚠️⚠️ NO TIENE `since` Y NO LO VA A TENER. Se baja entero cada vez.
+        El saldo CAMBIA SOLO —cuando una orden de otro lado se factura o se
+        rechaza, sin que nadie toque nada, y sin que ninguna fila de este
+        vendedor se modifique—. Un delta apoyado en una marca de modificación
+        sería ciego justamente a eso, que es la trampa que costó v0.72.0. Lo
+        mismo vale para la vigencia: un cupo que vence no cambia ninguna fila.
+
+        Es barato bajarlo entero: son los cupos de UN vendedor, y hoy hay dos
+        ítems controlados en todo el catálogo.
+
+        ⏰ La vigencia se evalúa contra el día de Nueva York, y la resuelve el
+        SERVIDOR. Acá solo llegan los cupos VIGENTES HOY. Un cupo futuro o
+        vencido no viaja: si viajara, cada teléfono decidiría con su propio
+        reloj y dos vendedores verían topes distintos el mismo día.
+      responses:
+        '200':
+          description: Los cupos vigentes de este vendedor
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ControlledSaleBalance' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/controlled-sale/quotas:
+    get:
+      tags: [catalog-admin]
+      summary: Los cupos de venta controlada
+      description: >
+        ★ NUEVO en v0.77.0 (D8–D10). REQUIERE rol ADMIN o ANALISTA_COMERCIAL.
+
+        Devuelve los cupos, incluidos los VENCIDOS y los FUTUROS — al revés
+        que `/sync/controlled-sale`, que solo manda los vigentes. La oficina
+        necesita ver lo que ya pasó y lo que va a pasar; el vendedor solo
+        necesita saber cuál es su tope hoy.
+      parameters:
+        - name: item_code
+          in: query
+          required: false
+          schema: { type: string }
+        - name: salesperson_code
+          in: query
+          required: false
+          schema: { type: string }
+        - name: only_current
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+          description: >
+            `true` deja solo los vigentes hoy (día de Nueva York). Por
+            defecto vienen todos.
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Página de cupos
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  page: { type: integer }
+                  page_size: { type: integer }
+                  total: { type: integer }
+                  quotas:
+                    type: array
+                    items: { $ref: '#/components/schemas/ControlledSaleQuota' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [catalog-admin]
+      summary: Asignarle un cupo a un vendedor
+      description: >
+        ★ NUEVO en v0.77.0 (D8–D10). REQUIERE rol ADMIN o ANALISTA_COMERCIAL.
+
+        ⚠️ 👤 EL `salesperson_code` SE VALIDA CONTRA EL ESPEJO
+        `SapSalespersons`, NO CONTRA LA TABLA DE CUENTAS. Es la regla global
+        👤 y acá no es teórica: el ÚNICO caso real de venta controlada en dev
+        pertenece a un vendedor que NO tiene cuenta de login. Si la validación
+        se hiciera contra las cuentas, ese cupo no se podría cargar — y es
+        exactamente el vendedor al que hay que ponerle uno.
+
+        Ese vendedor no va a ver el aviso en la app, porque no entra a la app.
+        Lo verá la oficina en el pedido. El cupo no deja de tener sentido por
+        eso; lo que no tiene sentido es impedir cargarlo.
+
+        ⚠️ NO SE PERMITEN DOS CUPOS SOLAPADOS para el mismo par
+        (ítem, vendedor) → 400. Si se permitieran, "el tope de hoy" no sería
+        una pregunta con una sola respuesta, y el servidor tendría que elegir
+        uno por un criterio que nadie escribió. El servidor lo verifica; no
+        alcanza con que la pantalla lo evite.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ControlledSaleQuotaWrite' }
+      responses:
+        '201':
+          description: Cupo creado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ControlledSaleQuota' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/controlled-sale/quotas/{quota_uuid}:
+    put:
+      tags: [catalog-admin]
+      summary: Cambiar un cupo
+      description: >
+        ★ NUEVO en v0.77.0 (D8–D10). REQUIERE rol ADMIN o ANALISTA_COMERCIAL.
+
+        ⚠️ CAMBIAR UN CUPO NO TOCA LOS AVISOS YA GUARDADOS. Los avisos de las
+        órdenes existentes son una FOTO del momento en que se tomó el pedido y
+        siguen mostrando el tope con el que se decidió entonces. Ver
+        `OrderDetail.controlled_sale_warnings`.
+
+        Es la misma regla que en los avisos de la oficina: editar no reescribe
+        el pasado. Un tope que se sube hoy no vuelve correcto un pedido que
+        se marcó ayer, ni al revés.
+
+        Vale la misma prohibición de solapamiento que en la creación.
+      parameters:
+        - name: quota_uuid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ControlledSaleQuotaWrite' }
+      responses:
+        '200':
+          description: Cupo actualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ControlledSaleQuota' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [catalog-admin]
+      summary: Quitar un cupo
+      description: >
+        ★ NUEVO en v0.77.0 (D8–D10). REQUIERE rol ADMIN o ANALISTA_COMERCIAL.
+
+        ⚠️⚠️ QUITAR UN CUPO NO RESTRINGE: LIBERA. Un vendedor sin cupo para un
+        ítem controlado NO TIENE TOPE. Se dice con estas palabras porque la
+        intuición dice lo contrario — "le quito el cupo" suena a quitarle el
+        permiso, y hace justo lo opuesto.
+
+        Si lo que se quiere es que no venda ese ítem, el cupo se pone en CERO,
+        que sí es un tope. Borrarlo lo deja sin límite.
+
+        La pantalla que ofrezca esta acción tiene que decirlo antes de
+        ejecutarla, no después.
+
+        Los avisos ya guardados en órdenes viejas no se tocan.
+      parameters:
+        - name: quota_uuid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204':
+          description: Cupo eliminado
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -15739,6 +16028,185 @@ components:
         delivered_count: { type: integer }
         not_delivered_count: { type: integer }
 
+    ControlledSaleQuotaWrite:
+      type: object
+      required: [item_code, salesperson_code, limit_quantity, starts_on]
+      description: >
+        ★ NUEVO en v0.77.0 (D8–D10). Lo que la oficina manda al crear o
+        cambiar un cupo.
+      properties:
+        item_code:
+          type: string
+          description: >
+            El ítem. Tiene que existir → 404 si no.
+
+            ⚠️ NO hace falta que el ítem tenga `controlled_sale` en `true`
+            para cargarle un cupo: se puede preparar antes de encender el
+            control. Pero mientras el ítem no esté controlado, EL CUPO NO
+            HACE NADA. El interruptor del ítem manda.
+        salesperson_code:
+          type: string
+          description: >
+            ⚠️ 👤 Se valida contra el espejo `SapSalespersons`, NO contra la
+            tabla de cuentas. Un vendedor sin cuenta de login puede tener
+            cupo — de hecho el único caso real de venta controlada en dev es
+            de un vendedor así.
+        limit_quantity:
+          type: number
+          format: double
+          minimum: 0
+          description: >
+            El tope en UNIDADES sobre las órdenes ABIERTAS de este vendedor
+            para este ítem. Misma definición de "abierta" que `committed`: no
+            RECHAZADA y todavía no facturada en SAP.
+
+            No es un cupo por día ni por pedido: es EXPOSICIÓN SIMULTÁNEA, y
+            se libera solo cuando las órdenes se cierran, sin que nadie
+            reinicie nada.
+
+            ★ CERO ES UN VALOR VÁLIDO Y SIGNIFICA "NO DEBERÍA VENDER ESTE
+            ÍTEM". No es lo mismo que no tener cupo: sin cupo no hay tope.
+            Cero es el único modo de expresar la restricción total.
+        starts_on:
+          type: string
+          format: date
+          description: >
+            Primer día de vigencia, en días de Nueva York (regla global ⏰).
+        ends_on:
+          type: string
+          format: date
+          nullable: true
+          description: >
+            Último día de vigencia, INCLUIDO — un cupo que termina el 30 rige
+            el 30. `null` = sin fecha de fin, rige hasta que alguien lo
+            cambie.
+
+            ⚠️⚠️ Y ACÁ ESTÁ LA TRAMPA DE ESTE CAMPO: **un cupo que vence NO
+            restringe más, LIBERA.** Cuando pasa `ends_on`, ese vendedor deja
+            de tener tope para ese ítem — no queda bloqueado. Quien ponga una
+            fecha de fin esperando que a partir de ahí "ya no pueda vender"
+            está pidiendo lo contrario de lo que va a pasar.
+
+            Para que a partir de una fecha no pueda vender, se carga un
+            SEGUNDO cupo con `limit_quantity` en 0 que empiece ese día.
+
+            ⚠️ Rango invertido (`ends_on` anterior a `starts_on`) → 400: sería
+            un cupo que no rige nunca y en pantalla se vería igual que uno
+            correcto.
+    ControlledSaleQuota:
+      allOf:
+        - $ref: '#/components/schemas/ControlledSaleQuotaWrite'
+        - type: object
+          description: >
+            ★ NUEVO en v0.77.0 (D8–D10). Un cupo tal como lo ve la oficina.
+          properties:
+            quota_uuid:
+              type: string
+              format: uuid
+              description: >
+                Identifica ESTE cupo. Es lo único que lo identifica: el par
+                (ítem, vendedor) NO alcanza, porque puede haber varios cupos
+                del mismo par en periodos distintos —uno de temporada y otro
+                normal—. Lo único que el servidor prohíbe es que se SOLAPEN.
+            item_name:
+              type: string
+              nullable: true
+              description: >
+                Para no pedir el catálogo entero solo para mostrar una fila.
+                `null` si el ítem ya no existe.
+            salesperson_name:
+              type: string
+              nullable: true
+              description: >
+                Resuelto desde el espejo `SapSalespersons`. `null` si ese
+                código ya no está en el espejo — y en ese caso la pantalla
+                muestra el código señalando que ya no existe, no un espacio en
+                blanco.
+            is_current:
+              type: boolean
+              description: >
+                Si rige HOY, resuelto por el servidor contra el día de Nueva
+                York. Viaja calculado a propósito: si cada pantalla lo
+                dedujera de las fechas con su propio reloj, dos personas
+                verían cosas distintas el mismo día. Es la misma decisión que
+                `Notice.visible`.
+            open_quantity:
+              type: number
+              format: double
+              description: >
+                Cuántas unidades tiene ABIERTAS hoy ese vendedor de ese ítem.
+
+                ⚠️ ES UN NÚMERO VIVO, calculado al leer — al revés que los
+                avisos guardados en las órdenes, que son una foto. Son dos
+                cosas distintas y conviene no confundirlas: esto dice CÓMO
+                ESTÁ HOY; el aviso de un pedido dice QUÉ PASÓ CUANDO SE TOMÓ.
+
+    ControlledSaleBalance:
+      type: object
+      description: >
+        ★ NUEVO en v0.77.0 (D8–D10). Lo que la app del vendedor baja para
+        poder avisar: sus cupos vigentes y cuánto lleva consumido.
+
+        ⚠️⚠️ LLEGA VIEJO Y NO HAY FORMA DE QUE NO LLEGUE VIEJO. El saldo se
+        mueve SIN QUE ESTE VENDEDOR HAGA NADA: basta con que una de sus
+        órdenes se facture o se rechace del otro lado. Por eso viaja `as_of`,
+        y por eso la pantalla TIENE QUE DECIR DE CUÁNDO ES el número.
+
+        Un saldo presentado como si fuera del momento es peor que no
+        mostrarlo: el vendedor toma una decisión creyendo que mira el
+        presente. Decir "hace 40 minutos" no arruina el aviso — lo hace
+        honesto, y el vendedor sabe si conviene sincronizar antes de decidir.
+      properties:
+        as_of:
+          type: string
+          format: date-time
+          description: >
+            El instante del SERVIDOR en que se calcularon estos saldos. Es lo
+            que la pantalla usa para decir de cuándo es el dato.
+
+            ⚠️ UNA SOLA LECTURA DEL RELOJ POR RESPUESTA: este mismo instante
+            es el que decide qué cupos están vigentes y contra el que se
+            contaron las órdenes abiertas. Resolver un mismo instante con dos
+            lecturas deja que dos partes de la respuesta describan momentos
+            distintos, y el daño no lo mide el ancho de la ventana sino qué
+            cuelga de cada lectura.
+        items:
+          type: array
+          description: >
+            Un elemento por cupo VIGENTE HOY de este vendedor. Vacío es un
+            estado legítimo y frecuente: significa que este vendedor no tiene
+            ningún tope, no que falte información.
+
+            ⚠️ Y ACÁ ESTÁ LA MITAD QUE SE OLVIDA: un ítem que NO aparece en
+            esta lista NO TIENE TOPE para este vendedor, aunque el ítem esté
+            marcado como de venta controlada. La app no debe inventarle un
+            límite ni bloquearlo por precaución.
+          items:
+            type: object
+            properties:
+              item_code: { type: string }
+              limit_quantity:
+                type: number
+                format: double
+                description: Su tope. Cero significa que no debería vender este ítem.
+              open_quantity:
+                type: number
+                format: double
+                description: >
+                  Cuánto lleva abierto AL MOMENTO DE `as_of`. No es el saldo
+                  de ahora.
+              ends_on:
+                type: string
+                format: date
+                nullable: true
+                description: >
+                  Último día en que rige este cupo, incluido. `null` = sin
+                  fecha de fin.
+
+                  La app NO lo usa para decidir si el cupo aplica —eso ya lo
+                  decidió el servidor al incluirlo en esta lista—. Sirve para
+                  avisarle al vendedor que su tope está por cambiar.
+
     ClosedLaneEntry:
       type: object
       description: >
@@ -18072,15 +18540,28 @@ components:
           format: double
           nullable: true
           description: >
-            ★ NUEVO en v0.41.0. El tope, en UNIDADES, por vendedor, sobre la
-            suma de sus órdenes ABIERTAS de este ítem — misma definición de
-            "abierta" que `committed`: no RECHAZADA y todavía no facturada.
+            ⚠️⚠️ SUPERADO POR v0.77.0 (D8–D10): ~~El tope, en UNIDADES, por
+            vendedor, sobre la suma de sus órdenes ABIERTAS de este ítem.~~
+            **ESTE CAMPO YA NO DECIDE NADA.** El tope pasó a ser por vendedor
+            y vive en `ControlledSaleQuota`, no acá.
 
-            No es un cupo por día ni por pedido: es exposición simultánea, y
-            se libera solo cuando las órdenes se cierran.
+            Se conserva porque quitarlo rompería a quien lo lea, y porque
+            guarda el valor con el que se venía trabajando. Pero **ningún
+            aviso se calcula contra él**. Si lo muestras en una pantalla,
+            tiene que decir que es histórico.
 
-            `null` cuando `controlled_sale` es `false`. AVISA, NO BLOQUEA: el
-            pedido que lo excede entra igual y queda marcado.
+            ⚠️ Y LA CONSECUENCIA QUE HAY QUE SABER ANTES DE ACTUALIZAR:
+            marcar un ítem como `controlled_sale` YA NO HACE NADA POR SÍ
+            SOLO. Hasta que alguien le cargue un cupo a un vendedor concreto,
+            ese vendedor no tiene tope. Es la decisión de negocio: nadie
+            queda limitado sin que alguien lo haya decidido para él.
+
+            Al desplegar v0.77.0, los ítems que hoy están controlados dejan de
+            avisar hasta que se carguen cupos. No es una regresión: es el
+            cambio pedido, y se dice acá para que no se descubra en la calle.
+
+            Sigue siendo `null` cuando `controlled_sale` es `false`, y sigue
+            valiendo que AVISA, NO BLOQUEA.
         image_url:
           type: string
           nullable: true
