@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.75.0
+  version: 0.76.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -121,6 +121,57 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.76.0 — EL `since` DE LOS AVISOS ERA DECORATIVO
+    ══════════════════════════════════════════════════════════════════════════
+
+    Un campo nuevo. Ninguna forma existente cambia.
+
+    🔴 `GET /sync/notices` NO DEVOLVÍA `server_time`
+      v0.71.0 escribió que este endpoint sigue "el patrón `Since` del resto de
+      `/sync`" y le puso el parámetro `since`. No le puso el campo que el
+      patrón necesita para que el cliente sepa hasta dónde bajó.
+
+      Medido: `/sync/catalog`, `/sync/clients` y `/sync/orders` devuelven
+      `server_time` desde siempre. Tres de cuatro. El que se agregó después es
+      el que quedó cojo — y la frase "mismo patrón que el resto" tapaba
+      exactamente eso.
+
+    ⚠️⚠️ POR QUÉ NO ES UN DETALLE DE COMODIDAD
+      Sin `server_time`, la única marca de agua disponible es EL RELOJ DEL
+      TELÉFONO. Y ese fallo es silencioso y asimétrico:
+
+      · reloj del cliente ATRASADO  → un aviso escrito dentro de esa ventana
+        no se vuelve a bajar NUNCA. Se pierde y nada falla.
+      · reloj del cliente ADELANTADO → se re-descarga de más. Inofensivo.
+
+      **Un `since` calculado por el cliente no es una versión menos precisa del
+      mismo mecanismo: es un mecanismo que pierde datos en una dirección y no
+      avisa.** Es la misma familia que la ceguera del delta de v0.72.0 — un
+      mecanismo cuya condición de funcionamiento no estaba escrita.
+
+    ★ CÓMO APARECIÓ, y la conducta merece quedar escrita
+      El agente del Mac fue a implementar N1 en la app de ventas, vio que no
+      había con qué fijar la marca de agua, y en vez de inventarla con el reloj
+      local se pasó a bajar la lista completa Y DIJO POR QUÉ. Improvisar el
+      `since` habría funcionado en todas las pruebas y habría perdido avisos en
+      la calle.
+
+    ★ BAJAR LA LISTA COMPLETA SIGUE SIENDO LEGÍTIMO
+      Los avisos son de bajo volumen y el fetch completo es inmune por
+      construcción a cualquier trampa de delta. Este campo hace el delta
+      POSIBLE, no obligatorio. No se pide cambiar la app que ya está entregada.
+
+    ⚠️ CONSECUENCIA HONESTA, para que nadie lea de más
+      Hoy ningún cliente usa `since` en esta ruta. O sea que la regla de las
+      transiciones de vigencia de v0.72.0 está implementada y probada, pero NO
+      ejercitada en producción. Sigue siendo obligatoria: el primer cliente que
+      use `since` sin ella se queda con avisos vencidos para siempre.
+
+      Se escribe porque "hay un test verde" y "esto funciona en producción" no
+      son la misma afirmación, y confundirlas es cómo una regla correcta se
+      borra por parecer inútil.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.75.0 — UNA CONDICIÓN IMPOSIBLE Y UNA VENTANA QUE SÍ EXISTE
@@ -5375,6 +5426,50 @@ paths:
               schema:
                 type: object
                 properties:
+                  server_time:
+                    type: string
+                    format: date-time
+                    description: >
+                      ★ NUEVO en v0.76.0. El instante del SERVIDOR al responder.
+                      Es el valor que el cliente guarda y manda como `since` la
+                      próxima vez.
+
+                      ⚠️ FALTABA, Y SIN ÉL EL `since` DE ESTA RUTA ERA
+                      DECORATIVO. v0.71.0 escribió que este endpoint sigue "el
+                      patrón Since del resto de /sync" y le puso el parámetro,
+                      pero no el campo que el patrón necesita. Los otros tres
+                      —`/sync/catalog`, `/sync/clients`, `/sync/orders`— lo
+                      devuelven desde siempre; el que se agregó después, no. Lo
+                      encontró el agente del Mac al implementar, y en vez de
+                      inventar una marca de agua se pasó a bajar la lista
+                      completa y dijo por qué.
+
+                      ⚠️⚠️ POR QUÉ NO ES UN DETALLE: la única marca de agua
+                      alternativa es EL RELOJ DEL TELÉFONO, y ese fallo es
+                      silencioso y asimétrico. Si el reloj del cliente va
+                      atrasado respecto del servidor, un aviso escrito dentro de
+                      esa ventana NO SE VUELVE A BAJAR NUNCA — se pierde sin que
+                      nada falle. Si va adelantado, solo se re-descarga de más y
+                      no pasa nada.
+
+                      Un `since` calculado por el cliente no es una versión
+                      menos precisa del mismo mecanismo: es un mecanismo que
+                      pierde datos en una dirección y no avisa. Por eso la marca
+                      de agua la emite SIEMPRE el servidor, en éste y en los
+                      otros tres.
+
+                      ★ BAJAR LA LISTA COMPLETA SIGUE SIENDO LEGÍTIMO acá y no
+                      se desaconseja: los avisos son de bajo volumen y el fetch
+                      completo es inmune por construcción a cualquier trampa de
+                      delta. Este campo hace el delta POSIBLE, no obligatorio.
+
+                      ⚠️ CONSECUENCIA HONESTA, para que nadie lea de más: hoy
+                      ningún cliente usa `since` en esta ruta, así que la regla
+                      de las transiciones de vigencia (v0.72.0) está
+                      implementada y probada pero NO ejercitada en producción.
+                      Sigue siendo obligatoria: el primer cliente que use
+                      `since` sin ella se queda con avisos vencidos para
+                      siempre.
                   notices:
                     type: array
                     items: { $ref: '#/components/schemas/Notice' }
