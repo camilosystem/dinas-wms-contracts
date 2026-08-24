@@ -1,0 +1,13 @@
+# El contrato se guarda y se saca SIEMPRE con finales de linea LF, en todos
+# los sistemas. No es cosmetico: sin esto, un checkout en Windows con
+# core.autocrlf=true deja el archivo con CRLF en el disco, y entonces
+# sha256sum mide bytes distintos a los que se publicaron aunque el contenido
+# sea identico. Eso convirtio una verificacion en una falsa alarma y costo un
+# ida y vuelta en v0.73.0.
+#
+# git hash-object no se veia afectado porque normaliza antes de hashear. Que
+# dos verificaciones discrepen sin que el contenido difiera es peor que tener
+# una sola: la discrepancia deja de significar algo.
+*       text=auto eol=lf
+*.yaml  text eol=lf
+*.md    text eol=lf
