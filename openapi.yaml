@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.78.0
+  version: 0.79.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -192,6 +192,73 @@ info:
       No se resuelve en esta versión a propósito: exponerlo es superficie
       nueva y hay que decidir dónde. Queda escrito para que sea una deuda
       conocida y no un descubrimiento.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.79.0 — EL MISMO PAGO SE FECHABA CON DOS COLUMNAS DISTINTAS
+    ══════════════════════════════════════════════════════════════════════════
+
+    Solo texto, pero anuncia un CAMBIO DE COMPORTAMIENTO. v0.78.0 dijo que
+    quien agrupe por día tiene que decir cuál de los dos tiempos usa. Al ir a
+    medirlo, resultó que ya estaba mal.
+
+    🔴 MEDIDO — CUATRO SUPERFICIES, DOS COLUMNAS, NINGUNA DECLARADA
+
+      GET /admin/payments?from&to                 → recorded_at
+      GET /admin/deposits/available-payments      → occurred_at
+      DepositPayment.payment_date                 → occurred_at
+      GET /admin/returns?from&to                  → recorded_at
+
+      El mismo pago se fecha distinto según quién pregunte, y el contrato no
+      desambiguaba ninguna. La bandeja de depósitos al menos tenía la decisión
+      escrita en el código; la lista del admin usaba `recorded_at` sin que
+      nada lo justificara — **la forma que sale sola cuando nadie eligió.**
+
+    ⚠️ POR QUÉ NADIE LO HABÍA VISTO, y por qué eso lo hace peor
+      Los dos tiempos caen casi siempre en el mismo día de Nueva York. Solo
+      divergen si una medianoche cae en la ventana que los separa. Medido
+      sobre los tres pagos de ruta que existen: `occurred_at` está entre 42 y
+      48 segundos DESPUÉS de `recorded_at`, los tres, sin excepción. Con esa
+      ventana, la divergencia aparece en aproximadamente 1 de cada 1.900
+      pagos.
+
+      O sea: no falla nunca, hasta que falla. Y cuando pase, el mismo pago va
+      a estar en el "hoy" de una pantalla y en el "ayer" de otra, sin que nada
+      dé error y sin que nadie pueda explicarlo.
+
+    ★ LA DECISIÓN: MANDA `occurred_at`
+      `/admin/payments` y `/admin/returns` pasan a filtrar por `occurred_at`.
+      Las otras dos ya lo hacían.
+
+      La razón es del negocio y no del dato: la pregunta de esas pantallas es
+      **qué pasó ese día**, no qué recibió el servidor ese día. En un sistema
+      que trabaja sin señal, `recorded_at` es la hora en que el teléfono
+      volvió a tener línea. Un driver que cobra a las once de la noche y
+      sincroniza a las ocho de la mañana cobró esa noche.
+
+    ⚠️ ES UN CAMBIO DE COMPORTAMIENTO Y SE DICE ASÍ
+      Un pago o un retorno puede moverse de día en esas dos listas. Hoy no se
+      va a notar —los tres pagos reales caen en el mismo día por las dos
+      columnas— pero es un cambio y no una aclaración.
+
+    ★ Y EL CASO CONTRARIO QUEDA NOMBRADO, no descartado
+      Conciliar "qué entró al sistema en esta jornada" es una pregunta
+      legítima, y su respuesta correcta es `recorded_at`. Nadie la pidió, así
+      que no se inventa un parámetro para ella. Si hace falta, es aditivo. Lo
+      que no se podía sostener es dejar la pregunta sin contestar.
+
+    ★ LOS RETORNOS TIENEN LA MISMA ASIMETRÍA, todavía sin segundo consumidor
+      `ProductReturn` expone `occurred_at` y nunca se usaba para filtrar. No
+      había divergencia porque no había con qué divergir — es la misma forma
+      esperando un segundo lector. Ahora queda decidida antes de que aparezca.
+
+    ★ NOTA DE MÉTODO — de dónde salió toda esta cadena
+      De pedir el payload crudo de un pago, que se pidió por una razón
+      distinta: que el Dashboard no verificara contra su propia construcción.
+      Ahí apareció un `occurred_at` posterior a `recorded_at`, que dio v0.78.0,
+      que obligó a medir quién agrupa por qué, que destapó esto.
+
+      **Tres hallazgos encadenados, ninguno buscado.** El rendimiento de mirar
+      un dato real no viene de lo que se fue a buscar.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.78.0 — `occurred_at` ES UNA AFIRMACIÓN, NO UNA OBSERVACIÓN
@@ -12695,7 +12762,26 @@ paths:
           in: query
           required: false
           schema: { type: string, format: date }
-          description: Desde esta fecha (inclusive). Por defecto, hoy.
+          description: >
+            Desde esta fecha, INCLUSIVE. Por defecto, hoy.
+
+            ⏰📱 ★ v0.79.0 — SE FILTRA POR `occurred_at`, no por `recorded_at`,
+            convertido a día de Nueva York. Antes de esta versión filtraba por
+            `recorded_at` sin que nada lo dijera, y eso es un CAMBIO DE
+            COMPORTAMIENTO: un registro puede moverse de día.
+
+            POR QUÉ occurred_at: la pregunta de esta pantalla es "qué pasó ese
+            día", no "qué recibió el servidor ese día". En un sistema que
+            trabaja sin señal, `recorded_at` es la hora en que el teléfono
+            volvió a tener línea — un hecho del sistema, no del negocio. Un
+            driver que cobra a las 11 de la noche y sincroniza a las 8 de la
+            mañana cobró esa noche, no al otro día.
+
+            ⚠️ Y HAY UN CASO DONDE `recorded_at` SERÍA LA RESPUESTA CORRECTA:
+            conciliar qué entró al sistema en una jornada. Hoy nadie lo pidió
+            y no se inventa; si hace falta, es un parámetro nuevo y es
+            aditivo. Lo que no se puede es dejar la pregunta sin contestar,
+            que es como estaba.
         - name: to
           in: query
           required: false
@@ -12955,7 +13041,26 @@ paths:
           in: query
           required: false
           schema: { type: string, format: date }
-          description: Desde esta fecha (inclusive). Por defecto, hoy.
+          description: >
+            Desde esta fecha, INCLUSIVE. Por defecto, hoy.
+
+            ⏰📱 ★ v0.79.0 — SE FILTRA POR `occurred_at`, no por `recorded_at`,
+            convertido a día de Nueva York. Antes de esta versión filtraba por
+            `recorded_at` sin que nada lo dijera, y eso es un CAMBIO DE
+            COMPORTAMIENTO: un registro puede moverse de día.
+
+            POR QUÉ occurred_at: la pregunta de esta pantalla es "qué pasó ese
+            día", no "qué recibió el servidor ese día". En un sistema que
+            trabaja sin señal, `recorded_at` es la hora en que el teléfono
+            volvió a tener línea — un hecho del sistema, no del negocio. Un
+            driver que cobra a las 11 de la noche y sincroniza a las 8 de la
+            mañana cobró esa noche, no al otro día.
+
+            ⚠️ Y HAY UN CASO DONDE `recorded_at` SERÍA LA RESPUESTA CORRECTA:
+            conciliar qué entró al sistema en una jornada. Hoy nadie lo pidió
+            y no se inventa; si hace falta, es un parámetro nuevo y es
+            aditivo. Lo que no se puede es dejar la pregunta sin contestar,
+            que es como estaba.
         - name: to
           in: query
           required: false
