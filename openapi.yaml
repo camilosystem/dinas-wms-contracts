@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.79.0
+  version: 0.80.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -192,6 +192,111 @@ info:
       No se resuelve en esta versión a propósito: exponerlo es superficie
       nueva y hay que decidir dónde. Queda escrito para que sea una deuda
       conocida y no un descubrimiento.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.80.0 — Dr2: EL DINERO DEL DRIVER TIENE CUSTODIA
+    ══════════════════════════════════════════════════════════════════════════
+
+    Primer bloque de la tercera ola. Tres rutas nuevas, cuatro operaciones,
+    dos schemas, tres campos en `Payment`. Ninguna forma existente cambia,
+    pero SÍ CAMBIA UN COMPORTAMIENTO y está escrito abajo.
+
+    ★ EL CONCEPTO QUE NO EXISTÍA
+      Medido en el esquema completo: `Payments` tiene quince columnas y
+      NINGUNA de custodia. Se barrió toda la base por Deliver, Handed, Custod,
+      Entrega, Turned y Received: el único acierto era de otra cosa. El ciclo
+      de vida real era "existe", "anulado" y "depositado" —y este último ni
+      siquiera es una columna, sale de un join—.
+
+      Ahora un pago de ruta tiene un cuarto hecho: **quién lo tiene**.
+
+    ⚠️⚠️ ES UNA DECLARACIÓN, NO UNA RECEPCIÓN, y esto es lo más importante
+      Nadie en bodega confirma que el dinero llegó. El driver dice que
+      entregó, y con eso alcanza para que la oficina pueda depositarlo.
+
+      Es una decisión de negocio tomada a propósito: montar la confirmación
+      del otro lado es otro bloque entero, con su pantalla, su rol y su
+      estado. **Se escribe acá para que nunca se lea como un acuse de
+      recibo.** La oficina descubre un faltante al cuadrar el depósito, no
+      antes, y eso se acepta sabiéndolo.
+
+    ★ LA BANDEJA DE DEPÓSITOS GANA UNA TERCERA CONDICIÓN
+      Hasta ahora "depositable" era `no anulado` y `no está en otro depósito`.
+      Ahora los pagos de RUTA además tienen que estar declarados entregados.
+      Mientras el dinero está en la calle, la oficina no puede depositarlo
+      porque no lo tiene. Los de CARTERA no cambian: no pasan por un driver.
+
+    ★ `GET /admin/cash-on-route` — LO QUE ANTES ERA INVISIBLE
+      Antes de este bloque, un pago no entregado no aparecía en NINGUNA
+      pantalla de la oficina. Existía en la base y nadie lo veía. Si un driver
+      no declaraba nada durante tres días, no había dónde notarlo.
+
+      Y a propósito NO es una bandeja de trabajo: no hay nada que aprobar. La
+      oficina no puede declarar por el driver. La acción que corresponde es
+      llamarlo, no tocar un botón.
+
+      Lleva `oldest_occurred_at` porque es lo que la vuelve accionable: un
+      total alto de hoy es normal; el mismo total con una visita de hace
+      cuatro días es otra cosa.
+
+    ★ DESMARCAR SE PERMITE, Y NO SE PUEDE TAPAR (decisión de Camilo)
+      Un error de un toque lo corrige quien lo cometió, sin llamar a nadie.
+      Pero retractarse de haber entregado dinero es un hecho: queda
+      `handover_undone_at` y sube `handover_undone_count`, aunque el estado
+      final sea idéntico al de antes.
+
+      **Un `1` es un error de dedo; un `5` es otra cosa** — y esa diferencia
+      es justo lo que una marca de tiempo sola no puede expresar. Por eso van
+      las dos. No se puede desmarcar un pago que ya está en un depósito: ahí
+      ya no es del driver.
+
+    ★ CERRAR LA RUTA DECLARA TODO ENTREGADO
+      Es el atajo de negocio. Se cuelga de `POST /dispatch/finish-route`, que
+      es un buen lugar y está medido: quince líneas, una sola escritura, una
+      sola transacción, y **solo puede correr una vez** porque su búsqueda
+      excluye RUTA_CERRADA.
+
+      La marca va ANTES del `SaveChanges`, para que el resumen de fin de ruta
+      ya la vea. Si el driver cierra la ruta y el resumen le dice que todavía
+      tiene el dinero, contradice la regla que acaba de dispararse.
+
+      ⚠️ Es una declaración POR OMISIÓN: el driver dijo "terminé la ruta" y el
+      sistema concluye "entregó el dinero". Son dos afirmaciones distintas y
+      la segunda no la hizo él. Se acepta porque el caso contrario —un driver
+      que cierra la ruta y deja el dinero declarado como propio para
+      siempre— es peor. Pero queda dicho que es una inferencia.
+
+    ⚠️ LA MIGRACIÓN — 3 filas, y ese número es el problema
+      Los pagos que ya existen no tienen la marca. **Se rellenan según el
+      estado del camión: entregado si su ruta está CERRADA, sin declarar si
+      sigue viva.** Es la única opción que no inventa un hecho — aplica
+      retroactivamente la misma regla del atajo, en vez de suponer un estado.
+
+      Con los datos de hoy da dos entregados y uno sin declarar, y el que ya
+      está en el depósito OF-0001 sale entregado, que es lo coherente. Un
+      default plano de "no entregado" habría dejado un pago depositado y no
+      entregado a la vez — un estado que el modelo nuevo dice imposible.
+
+      ★ Y LA RAZÓN POR LA QUE ESTO SE DECIDE CON CUIDADO teniendo tres filas,
+      dicha por el agente que lo midió: **el riesgo no es proporcional al
+      tamaño del dato, es inversamente proporcional.** Con tres filas un error
+      de migración susurra; con trescientas alguien grita el mismo día. Es la
+      misma forma que el `Guid.Empty` que no hizo fallar el índice único
+      porque había una sola fila.
+
+    ⚠️ DOS COSAS MEDIDAS QUE SE LEEN AL REVÉS SI NO SE ESCRIBEN
+
+      · **Anular NO exige camión activo.** Un driver puede anular un pago
+        después de cerrar la ruta, así que un pago puede quedar declarado
+        entregado y después anulado. No es dinero fantasma —anular gana, y un
+        pago anulado ya no aparece en la bandeja— pero el par existe y la
+        oficina puede verlo.
+
+      · **Un 200 de `POST /dispatch/payments` NO prueba que la ruta estuviera
+        abierta.** La idempotencia devuelve el pago existente ANTES de mirar
+        el camión, así que reenviar un `payment_uuid` ya creado responde 200
+        con la ruta cerrada. No crea nada, pero nadie debe usar ese 200 como
+        evidencia del estado del camión.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.79.0 — EL MISMO PAGO SE FECHABA CON DOS COLUMNAS DISTINTAS
@@ -7047,6 +7152,20 @@ paths:
 
         ⚠️ Un pago que un vendedor ya metió en SU depósito no aparece acá.
         El primero que lo toma lo tiene.
+
+        ⚠️⚠️ ★ v0.80.0 (Dr2) — Y AHORA HAY UNA TERCERA CONDICIÓN PARA LOS
+        PAGOS DE RUTA: solo aparecen los que el driver YA DECLARÓ ENTREGADOS
+        en bodega (`handed_over_at` no nulo). Mientras el dinero está en la
+        calle, la oficina no puede depositarlo, porque no lo tiene.
+
+        Los pagos de CARTERA no cambian: no pasan por un driver y no tienen
+        custodia que declarar.
+
+        ★ DÓNDE VER LO QUE FALTA: `GET /admin/cash-on-route` muestra lo
+        cobrado y no declarado, por driver. Antes de v0.80.0 ese dinero no
+        aparecía en ninguna pantalla de la oficina; ahora tiene la suya, y a
+        propósito NO es esta — una bandeja de depósito con dinero que nadie
+        entregó invita a depositarlo.
       parameters:
         - name: kind
           in: query
@@ -12962,6 +13081,165 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /dispatch/my-cash:
+    get:
+      tags: [dispatch]
+      summary: Mi caja — el dinero que este driver todavía tiene
+      description: >
+        ★ NUEVO en v0.80.0 (Dr2). REQUIERE rol DRIVER. Los pagos que este
+        driver cobró y **todavía no declaró entregados**, con su total.
+
+        ★ QUÉ NO INCLUYE, y por qué: no trae los que ya declaró entregados.
+        "Mi caja" es lo que tiene en la mano ahora; mezclar lo entregado haría
+        ambiguo el único número que importa, que es cuánto dinero lleva
+        encima. Lo entregado se consulta en `GET /dispatch/payments/mine`, que
+        trae todo.
+
+        Tampoco trae los ANULADOS: no hay dinero detrás.
+
+        ⏰ Cruza jornadas a propósito. Si un driver cerró la ruta de ayer sin
+        que sus pagos se marcaran —cosa que hoy no puede pasar, porque cerrar
+        la ruta los marca— o si tomó dinero en dos camiones distintos, esto lo
+        muestra TODO junto. Es su caja, no la caja de una ruta.
+      responses:
+        '200':
+          description: Lo que este driver tiene sin entregar
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DriverCash' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /dispatch/payments/{payment_uuid}/handover:
+    post:
+      tags: [dispatch]
+      summary: Declarar que este dinero se entregó en bodega
+      description: >
+        ★ NUEVO en v0.80.0 (Dr2). REQUIERE rol DRIVER, y el pago debe ser
+        SUYO → 403 si no.
+
+        Pone `handed_over_at` con la hora del SERVIDOR. A partir de ahí el
+        pago aparece en la bandeja de depósitos de la oficina.
+
+        IDEMPOTENTE: declarar dos veces es lo mismo que declarar una, y
+        devuelve 200 con el registro existente sin mover la marca. Un
+        reintento tras perderse la respuesta no puede ensuciar nada.
+
+        ⚠️ NO SE PUEDE DECLARAR UN PAGO ANULADO → 409. No hay dinero detrás.
+
+        ⚠️⚠️ Y LO QUE ESTA PUERTA NO ES: no es un acuse de recibo. Nadie en
+        bodega confirma nada. El driver dice que entregó, y con eso alcanza
+        para que la oficina pueda depositarlo. La pantalla que ofrezca este
+        botón tiene que decirlo con esas palabras — quien lo toque tiene que
+        entender que está declarando, no entregando.
+      parameters:
+        - name: payment_uuid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Declarado (o ya lo estaba)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Payment' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: El pago está anulado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [dispatch]
+      summary: Deshacer la declaración de entrega
+      description: >
+        ★ NUEVO en v0.80.0 (Dr2). REQUIERE rol DRIVER, y el pago debe ser
+        SUYO → 403 si no.
+
+        Vuelve `handed_over_at` a `null`, mueve `handover_undone_at` y suma
+        uno a `handover_undone_count`. El pago sale de la bandeja de la
+        oficina y vuelve a la caja del driver.
+
+        ★ POR QUÉ SE PERMITE (decisión de Camilo): un error de un toque lo
+        corrige quien lo cometió, sin tener que llamar a nadie. Obligar a
+        pasar por la oficina por una equivocación honesta cuesta más de lo que
+        protege.
+
+        ⚠️ Y POR QUÉ NO SE PUEDE TAPAR: retractarse de haber entregado dinero
+        es un hecho, y queda con su hora y su conteo aunque el estado final
+        sea idéntico al de antes. Un `1` es un error de dedo; un `5` es otra
+        cosa. **La oficina ve la secuencia, no solo el estado.**
+
+        ⚠️ NO SE PUEDE SI EL PAGO YA ESTÁ EN UN DEPÓSITO → 409. Ahí ya no es
+        del driver: la oficina lo tomó, y sacarlo dejaría un depósito cuyo
+        total no coincide con lo que contiene. Es la misma razón por la que un
+        pago dentro de un depósito cerrado no se puede anular.
+
+        No es idempotente en el conteo, y es a propósito: cada retractación es
+        un hecho aparte. Deshacer algo que ya está deshecho devuelve 409, no
+        200 — si devolviera 200 en silencio, un cliente con reintentos podría
+        inflar el conteo sin que nadie lo tocara.
+      parameters:
+        - name: payment_uuid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Declaración deshecha
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Payment' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            El pago ya está en un depósito, o no estaba declarado como
+            entregado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /admin/cash-on-route:
+    get:
+      tags: [deposits-admin]
+      summary: El dinero que los drivers todavía tienen en la mano
+      description: >
+        ★ NUEVO en v0.80.0 (Dr2). REQUIERE ADMIN o APROBADOR_PAGOS.
+
+        Los pagos de ruta cobrados y **todavía no declarados entregados**,
+        agrupados por driver, con el total de cada uno y el total general.
+
+        ★ POR QUÉ EXISTE (decisión de Camilo): antes de este bloque, un pago
+        no entregado no aparecía en NINGÚN lado de la oficina. Existía en la
+        base y era invisible. Si un driver no declaraba nada durante tres
+        días, no había una sola pantalla donde eso se notara.
+
+        Ahora la oficina puede ver cuánto dinero hay afuera y con quién, que
+        es distinto de lo que ya está listo para depositar.
+
+        ⚠️ ESTO NO ES UNA BANDEJA DE TRABAJO: no hay nada que aprobar ni
+        rechazar acá. La oficina no puede declarar por el driver — la
+        declaración es suya y de nadie más. Esta pantalla sirve para SABER, y
+        la acción que corresponde es llamar al driver, no tocar un botón.
+
+        ⚠️ Y NO CUENTA EL DINERO QUE HAY: cuenta el que fue REGISTRADO y no
+        declarado. Un pago que un driver cobró y nunca registró no aparece —
+        no porque el número esté mal, sino porque el sistema no sabe que
+        existe. Un total de cero significa "nadie tiene dinero registrado sin
+        declarar", no "nadie tiene dinero".
+      responses:
+        '200':
+          description: El dinero en la calle, por driver
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CashOnRoute' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /dispatch/payments/{payment_uuid}/void:
     post:
       tags: [payments]
@@ -16239,6 +16517,69 @@ components:
         delivered_count: { type: integer }
         not_delivered_count: { type: integer }
 
+    DriverCash:
+      type: object
+      description: >
+        ★ NUEVO en v0.80.0 (Dr2). Lo que un driver tiene sin declarar.
+      properties:
+        total_amount:
+          type: number
+          format: double
+          description: >
+            La suma de lo que lleva encima. Cero es un estado legítimo y
+            frecuente: significa que declaró todo, no que falte información.
+        payments:
+          type: array
+          description: >
+            Los pagos sin declarar, más nuevos primero. Puede incluir pagos de
+            camiones distintos si el driver trabajó más de una ruta.
+          items: { $ref: '#/components/schemas/Payment' }
+
+    CashOnRoute:
+      type: object
+      description: >
+        ★ NUEVO en v0.80.0 (Dr2). El dinero registrado y no declarado, visto
+        por la oficina.
+      properties:
+        total_amount:
+          type: number
+          format: double
+          description: El total general, sumando todos los drivers.
+        drivers:
+          type: array
+          description: >
+            Un elemento por driver CON dinero sin declarar. Un driver que
+            declaró todo NO aparece — la lista es de lo que falta, no de todos
+            los drivers.
+          items:
+            type: object
+            properties:
+              driver_username: { type: string }
+              driver_name:
+                type: string
+                nullable: true
+                description: >
+                  `null` si esa cuenta ya no existe. En ese caso la pantalla
+                  muestra el usuario señalando que la cuenta se fue, no un
+                  espacio en blanco — y ese caso importa más acá que en otros
+                  lados, porque significa dinero sin dueño localizable.
+              payment_count: { type: integer }
+              total_amount:
+                type: number
+                format: double
+              oldest_occurred_at:
+                type: string
+                format: date-time
+                description: >
+                  La visita más ANTIGUA sin declarar de este driver. Es el
+                  campo que convierte la lista en algo accionable: un total
+                  alto de hoy es normal; el mismo total con una visita de hace
+                  cuatro días es otra cosa.
+
+                  ⏰📱 Sale de `occurred_at`, así que hereda la regla 📱 — lo
+                  afirma el dispositivo. Para esta pantalla alcanza: sirve
+                  para ordenar por antigüedad, no para acusar a nadie.
+
     ControlledSaleQuotaWrite:
       type: object
       required: [item_code, salesperson_code, limit_quantity, starts_on]
@@ -17042,6 +17383,53 @@ components:
           type: string
           format: date-time
           description: Cuándo llegó al servidor.
+        handed_over_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            ★ NUEVO en v0.80.0 (Dr2). Cuándo el driver declaró haber entregado
+            este dinero en bodega. **`null` = TODAVÍA LO TIENE ÉL.**
+
+            ⚠️⚠️ ES UNA DECLARACIÓN DEL DRIVER, NO UNA RECEPCIÓN CONFIRMADA.
+            Nadie del otro lado confirma que ese dinero llegó. Es una decisión
+            de negocio tomada a propósito —montar una confirmación en bodega
+            sería otro bloque entero, con su pantalla, su rol y su estado— y
+            se escribe acá para que NUNCA se lea como un acuse de recibo. La
+            oficina descubre un faltante al cuadrar el depósito, no antes.
+
+            ★ ESTA MARCA LA PONE EL SERVIDOR, y es una asimetría deliberada
+            con `occurred_at`. La regla global 📱 dice que `occurred_at` lo
+            AFIRMA el dispositivo, porque describe algo que pasó en la calle y
+            que el servidor no pudo observar. Acá es al revés: lo que se
+            registra es una DECLARACIÓN, y la declaración ocurre cuando llega.
+            No hay un hecho anterior que el servidor se esté perdiendo.
+        handover_undone_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            ★ NUEVO en v0.80.0 (Dr2). La ÚLTIMA vez que el driver DESHIZO su
+            declaración de entrega. `null` = nunca la deshizo.
+
+            Existe porque desmarcar no puede ser invisible: un driver que
+            declara haber entregado dinero y después se retracta es un hecho
+            que la oficina tiene que poder ver, aunque el estado final vuelva
+            a ser el mismo que antes.
+
+            ⚠️ SOLO GUARDA LA ÚLTIMA. Si alguien marca y desmarca varias
+            veces, las anteriores no quedan — para eso está
+            `handover_undone_count`. Se dice para que nadie lo lea como un
+            historial completo.
+        handover_undone_count:
+          type: integer
+          description: >
+            ★ NUEVO en v0.80.0 (Dr2). Cuántas veces se deshizo la declaración
+            de entrega de este pago. `0` es lo normal.
+
+            Un `1` es una equivocación de un toque. Un `5` es otra cosa, y esa
+            diferencia es justamente lo que una marca de tiempo sola no puede
+            expresar: sin el conteo, cinco retractaciones se ven igual que una.
         is_voided:
           type: boolean
           description: >
