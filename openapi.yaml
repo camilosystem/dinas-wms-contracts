@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.74.0
+  version: 0.75.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -121,6 +121,67 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.75.0 — UNA CONDICIÓN IMPOSIBLE Y UNA VENTANA QUE SÍ EXISTE
+    ══════════════════════════════════════════════════════════════════════════
+
+    Solo texto. Ninguna forma cambia. Corrige v0.73.0 y cierra una nota que
+    quedó pendiente de v0.74.0.
+
+    🔴 `created_by_name` DESCRIBÍA UNA CONDICIÓN QUE NO PUEDE OCURRIR
+      Decía que llega `null` "si el usuario no tiene uno cargado". Es
+      imposible: `display_name` es OBLIGATORIO al crear una cuenta de
+      bodeguero, y eso ya estaba escrito en este mismo archivo, dos pantallas
+      más arriba. La medición lo confirmó —la columna es NOT NULL, 13 cuentas
+      en dev, ninguna nula ni vacía— pero no hacía falta la base: **el
+      contrato se contradecía a sí mismo y la contradicción era comprobable
+      adentro del propio archivo.**
+
+      El costo ya se estaba pagando: se le pidió al Dashboard que verificara
+      esa rama contra datos reales, y se le pidió fabricar "un bodeguero sin
+      display_name", que no existe ni puede existir. Habría buscado donde no
+      era.
+
+    ★ CUÁNDO LLEGA `null` DE VERDAD
+      Cuando el `username` de la novedad ya no resuelve contra las cuentas:
+      la cuenta se borró o se renombró DESPUÉS de que la novedad se
+      escribiera. **La novedad sobrevive a su autor**, que es lo correcto —
+      borrar a alguien no deshace lo que dijo.
+
+      Y eso cambia lo que la pantalla debe mostrar. Antes decía "muestra el
+      username"; ahora dice que lo muestre SEÑALANDO QUE ESE AUTOR YA NO
+      EXISTE. Un texto que diga solo "bodeguero7" se lee como una cuenta
+      vigente, y no lo es. Es la misma diferencia entre un dato que falta y
+      un hecho del dato.
+
+      Consecuencia práctica que va escrita: esta rama NO se puede verificar
+      contra datos reales sin borrar una cuenta. Queda en fixture, y quien la
+      implemente lo dice así en vez de darla por probada.
+
+    ★ LA VENTANA DE REASIGNACIÓN EXISTE Y ES ANGOSTA
+      Al intentar reasignar un carril ya cerrado de un camión ALISTADO, el
+      servidor lo rechazó: un camión con todos sus carriles CERRADO no admite
+      asignaciones. Leído de una sola forma, eso diría que la historia de
+      cierres sobraba.
+
+      No sobra. Un carril puede estar CERRADO mientras su hermano sigue
+      abierto: el camión todavía no es ALISTADO y ahí SÍ se puede reasignar.
+      Ése fue el estado real del único camión de prueba antes de cerrarse del
+      todo, así que no es teórico. La ventana se abre cuando cierra el primer
+      carril y se cierra cuando cierra el último.
+
+      Va escrito porque una medición que se puede leer al revés, sin la
+      lectura correcta al lado, es una invitación a desarmar lo que protege.
+
+    ★ NOTA DE MÉTODO — la forma que se repitió tres veces en dos días
+      v0.73.0 afirmó una identidad que no verificó. v0.73.0 describió una
+      condición imposible. Las dos las destapó quien tuvo que implementarlas,
+      no quien las releyó. **Una afirmación sobre lo que PUEDE pasar solo se
+      comprueba cuando alguien intenta hacerla pasar.** Escribir menos no es
+      la respuesta; la respuesta es que cada afirmación de ese tipo llegue al
+      agente marcada como comprobable, y que él la mida antes de apoyarse en
+      ella.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.74.0 — UNA IDENTIDAD QUE EL CONTRATO AFIRMABA Y NO ERA CIERTA
@@ -15614,6 +15675,22 @@ components:
 
             La pantalla usa este valor como clave de lista. Usar el par
             camión+carril colapsaría dos trabajos en uno.
+
+            ★ v0.75.0 — LA VENTANA DE REASIGNACIÓN EXISTE Y ES ANGOSTA, y se
+            escribe porque medirla dio un resultado que se puede leer al
+            revés. Se intentó reasignar un carril ya cerrado de un camión
+            ALISTADO y el servidor lo rechazó: un camión con todos sus
+            carriles CERRADO ya no admite asignaciones.
+
+            Sería un error concluir de ahí que esta historia sobra. Un carril
+            puede estar CERRADO mientras SU HERMANO SIGUE ABIERTO — el camión
+            todavía no es ALISTADO y ahí sí se puede reasignar. Ése es
+            exactamente el estado en que estuvo el único camión de prueba
+            antes de cerrarse del todo, así que no es un caso teórico.
+
+            La ventana se abre en el instante en que el primer carril cierra
+            y se cierra cuando cierra el último. Todo lo que pase adentro es
+            invisible en la asignación actual y visible acá.
         truck_id:
           type: string
           format: uuid
@@ -15730,9 +15807,27 @@ components:
           type: string
           nullable: true
           description: >
-            Su nombre para mostrar. `null` si el usuario no tiene uno cargado
-            — y en ese caso la pantalla muestra el `username`, no un espacio
-            en blanco. Nulo y vacío no significan lo mismo.
+            Su nombre para mostrar.
+
+            ⚠️ SUPERADO POR v0.75.0: ~~`null` si el usuario no tiene uno
+            cargado.~~ ESA CONDICIÓN NO PUEDE OCURRIR, y el propio contrato
+            ya lo decía dos pantallas más arriba: `display_name` es
+            OBLIGATORIO al crear una cuenta de bodeguero. No hay forma de
+            tener una cuenta sin nombre.
+
+            ★ v0.75.0 — CUÁNDO LLEGA `null` DE VERDAD: cuando el `username`
+            de la novedad YA NO RESUELVE contra las cuentas, porque la cuenta
+            se borró o se renombró DESPUÉS de que la novedad se escribiera.
+            La novedad sobrevive a su autor — es lo correcto, porque borrar a
+            alguien no deshace lo que dijo.
+
+            Y por eso la pantalla no muestra el `username` como si fuera un
+            nombre a secas: lo muestra señalando que ese autor ya no existe.
+            Un texto que diga solo "bodeguero7" se lee como una cuenta
+            vigente, y no lo es.
+
+            NUNCA llega cadena vacía. Nulo y vacío siguen sin significar lo
+            mismo, pero acá solo uno de los dos es alcanzable.
         created_at: { type: string, format: date-time }
         updated_at:
           type: string
