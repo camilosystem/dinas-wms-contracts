@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.73.0
+  version: 0.74.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -121,6 +121,41 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.74.0 — UNA IDENTIDAD QUE EL CONTRATO AFIRMABA Y NO ERA CIERTA
+    ══════════════════════════════════════════════════════════════════════════
+
+    Corrige v0.73.0, publicada hace un rato. Solo agrega un campo; ninguna
+    forma existente cambia.
+
+    🔴 LO QUE ESTABA MAL
+      `ClosedLaneEntry.work_date` decía "la identidad de la entrada es
+      `truck_id` + `lane`". Es falso, y lo destapó la implementación: un
+      carril se puede DESASIGNAR y volver a ASIGNAR, y entonces se cierra dos
+      veces. Son dos trabajos reales, posiblemente de dos bodegueros
+      distintos, y los dos tienen que quedar.
+
+      Con esa frase en el contrato, una pantalla que usara el par como clave
+      de lista colapsaría los dos cierres en uno, y el trabajo del primero
+      desaparecería sin ruido — que es exactamente lo que este bloque existe
+      para impedir.
+
+    ★ `closure_uuid`
+      Se agrega a `ClosedLaneEntry` y es lo único que identifica la entrada.
+      La frase vieja queda tachada, no borrada.
+
+      Por la misma razón NO hay índice único sobre (camión, carril): un único
+      obligaría a pisar el primer cierre con el segundo.
+
+    ★ NOTA DE MÉTODO — de dónde salió
+      No salió de releer el contrato: salió de que el implementador tuvo que
+      decidir si ponía un índice único, vio que desasignar y reasignar
+      permiten un segundo cierre, y lo dijo. **Una afirmación de unicidad se
+      escribe fácil y se comprueba solo cuando alguien intenta apoyarse en
+      ella.** El contrato ya tenía la regla de no escribir un "porque" que no
+      se puede demostrar; ésta es su gemela: no escribir una identidad que no
+      se verificó.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.73.0 — B4: LA HISTORIA DEL PICKING Y LAS NOVEDADES DE BODEGA
@@ -15560,6 +15595,25 @@ components:
         NO mueve esta entrada; desasignarlo NO la borra. Es exactamente la
         diferencia que justifica que el bloque exista.
       properties:
+        closure_uuid:
+          type: string
+          format: uuid
+          description: >
+            ★ NUEVO en v0.74.0. Identifica ESTE cierre. Es lo único de la
+            entrada que la identifica.
+
+            ⚠️ POR QUÉ NO ALCANZA `truck_id` + `lane`, que es lo que v0.73.0
+            afirmaba: un carril se puede DESASIGNAR y volver a ASIGNAR, y
+            entonces se cierra dos veces. No es un caso teórico — ocurrió en
+            la implementación. Son dos trabajos reales, posiblemente de dos
+            bodegueros distintos, y los dos tienen que quedar en la historia.
+
+            Por la misma razón NO hay un índice único sobre (camión, carril):
+            un único obligaría a pisar el primer cierre con el segundo, que es
+            exactamente lo que este bloque existe para impedir.
+
+            La pantalla usa este valor como clave de lista. Usar el par
+            camión+carril colapsaría dos trabajos en uno.
         truck_id:
           type: string
           format: uuid
@@ -15594,7 +15648,14 @@ components:
           description: >
             El DÍA TRABAJADO, como día calendario de America/New_York derivado
             de `closed_at` (regla global ⏰). Es la etiqueta con la que agrupa
-            la pantalla; la identidad de la entrada es `truck_id` + `lane`.
+            la pantalla.
+
+            ⚠️ SUPERADO POR v0.74.0: ~~la identidad de la entrada es
+            `truck_id` + `lane`.~~ ERA FALSO y lo destapó la implementación:
+            un carril se puede desasignar y volver a asignar, y entonces se
+            cierra DOS VECES. Son dos trabajos reales, de dos personas
+            posiblemente distintas, y los dos tienen que quedar. La identidad
+            es `closure_uuid`.
 
             ★ SE DERIVA DEL CIERRE, y eso es DISTINTO de `ClosedRouteEntry`,
             que deriva su `route_date` del ARRANQUE. La diferencia es
