@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.80.0
+  version: 0.81.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -193,6 +193,94 @@ info:
       nueva y hay que decidir dónde. Queda escrito para que sea una deuda
       conocida y no un descubrimiento.
 
+    ⚠️⚠️ ★ v0.81.0 — EL DELTA ENTRE LOS DOS TIEMPOS NO TIENE SIGNO NI TAMAÑO
+    GARANTIZADOS, y esto invalida el único número que este contrato llegó a
+    escribir sobre el tema.
+
+      Las dos direcciones ocurren, y por causas distintas:
+
+      · `occurred_at` DESPUÉS de `recorded_at` → el reloj del dispositivo va
+        adelantado respecto del servidor. Físicamente imposible para una
+        visita real; es puro desfase de reloj. Medido en dev: +42, +46 y
+        +48 segundos en tres pagos, con el simulador +47,6 s adelante.
+      · `occurred_at` ANTES de `recorded_at` → el caso NORMAL, el que da
+        sentido al campo: se cobró sin señal y se sincronizó después. Medido:
+        un pago con **19 horas** de diferencia.
+
+      ★ POR QUÉ ESTO IMPORTA MÁS QUE LA CURIOSIDAD:
+
+      1. **Ninguna pantalla puede asumir que `occurred_at` es reciente.** Un
+         "hace X" calculado sobre él puede dar horas, días, o un futuro de
+         cuarenta segundos. Las tres son datos legítimos y las tres tienen que
+         verse bien.
+      2. **Ninguna estimación de riesgo puede apoyarse en el tamaño de la
+         ventana**, porque la ventana es un desfase de reloj que nadie
+         controla ni vigila. En un dispositivo real contra un servidor real
+         será otro número, y puede ser de cualquier signo. Un porcentaje ahí
+         se lee como una garantía que nadie puede sostener.
+      3. **Un conjunto de prueba con una sola dirección no atrapa una
+         inversión de signo.** Mientras los tres pagos tuvieron el desfase
+         hacia el mismo lado, invertir una comparación habría pasado en verde.
+         Cualquier prueba sobre estos dos tiempos necesita las dos
+         direcciones.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.81.0 — UN NÚMERO QUE NO SE PODÍA SOSTENER, Y UN ORDEN QUE
+    NADIE HABÍA ESCRITO
+    ══════════════════════════════════════════════════════════════════════════
+
+    Solo texto. Ninguna forma cambia. Tres correcciones que estaban en cola a
+    propósito, esperando que Dr2 cerrara para no mover el submódulo en medio
+    de un bloque en vuelo.
+
+    🔴 EL "1 DE CADA 1.900" DE v0.79.0 NO ERA UNA PROPIEDAD DEL SISTEMA
+      Ese número salió de una ventana de ~45 segundos medida sobre los tres
+      pagos que existían. Resultó ser **el desfase entre el reloj del
+      simulador y el del servidor** —medido después: +47,6 s— y no una
+      constante de nada.
+
+      Y llegó la refutación por el otro lado: un cuarto pago con `occurred_at`
+      **diecinueve horas antes** de `recorded_at`.
+
+      La cifra queda tachada, no borrada. Lo que la reemplaza no es otro
+      número: es lo que sí se puede sostener.
+
+    ★ LA REGLA 📱 GANA LAS DOS DIRECCIONES
+      · `occurred_at` DESPUÉS → reloj del dispositivo adelantado. Imposible
+        para una visita real; puro desfase.
+      · `occurred_at` ANTES → el caso normal, el que da sentido al campo: se
+        cobró sin señal y se sincronizó después.
+
+      Tres consecuencias, y ninguna es teórica:
+
+      1. Ninguna pantalla puede asumir que `occurred_at` es reciente. Un
+         "hace X" sobre él puede dar horas, días o un futuro de cuarenta
+         segundos, y las tres son datos legítimos.
+      2. Ninguna estimación de riesgo puede apoyarse en el tamaño de la
+         ventana: es un desfase de reloj que nadie controla ni vigila.
+      3. **Un conjunto de prueba con una sola dirección no atrapa una
+         inversión de signo.** Mientras los tres pagos tuvieron el desfase
+         hacia el mismo lado, invertir una comparación pasaba en verde. Lo
+         nombró el agente del Dashboard al ver llegar el cuarto pago, y es la
+         parte más útil de todo esto.
+
+    ★ Y EL ORDEN DE `/admin/payments` Y `/admin/returns`, que no estaba escrito
+      Descendente por `occurred_at`, la misma columna por la que filtran.
+      Ordenar por una y filtrar por otra deja los elementos del borde fuera de
+      lugar sin que nadie pueda explicarlo.
+
+      Se escribe porque ya sabemos cómo termina lo contrario: **un detalle sin
+      especificar no es neutro — lo decide quien implementa primero, distinto
+      en cada lugar.** Es la misma forma que produjo la divergencia de
+      columnas que v0.79.0 vino a arreglar.
+
+    ★ NOTA DE MÉTODO — el número no lo corrigió quien lo escribió
+      El agente del Dashboard construyó un test que PROHÍBE citar esa
+      probabilidad en pantalla antes de que el contrato la tachara, con el
+      argumento correcto: una cifra en pantalla se lee como una garantía que
+      nadie puede sostener. El contrato llega segundo, y llega porque el
+      consumidor no aceptó lo que decía.
+
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.80.0 — Dr2: EL DINERO DEL DRIVER TIENE CUSTODIA
     ══════════════════════════════════════════════════════════════════════════
@@ -321,10 +409,17 @@ info:
     ⚠️ POR QUÉ NADIE LO HABÍA VISTO, y por qué eso lo hace peor
       Los dos tiempos caen casi siempre en el mismo día de Nueva York. Solo
       divergen si una medianoche cae en la ventana que los separa. Medido
-      sobre los tres pagos de ruta que existen: `occurred_at` está entre 42 y
-      48 segundos DESPUÉS de `recorded_at`, los tres, sin excepción. Con esa
-      ventana, la divergencia aparece en aproximadamente 1 de cada 1.900
-      pagos.
+      sobre los tres pagos de ruta que existían entonces: `occurred_at` estaba
+      entre 42 y 48 segundos DESPUÉS de `recorded_at`, los tres, sin
+      excepción.
+
+      ⚠️ SUPERADO POR v0.81.0: ~~Con esa ventana, la divergencia aparece en
+      aproximadamente 1 de cada 1.900 pagos.~~ **ESE NÚMERO NO ERA UNA
+      PROPIEDAD DEL SISTEMA.** Aquellos 45 segundos resultaron ser el desfase
+      entre el reloj del simulador y el del servidor —medido después: +47,6 s—
+      y un cuarto pago llegó con `occurred_at` DIECINUEVE HORAS ANTES de
+      `recorded_at`. Ver la regla 📱, que ahora dice lo que se puede sostener
+      en vez de un número que no.
 
       O sea: no falla nunca, hasta que falla. Y cuando pase, el mismo pago va
       a estar en el "hoy" de una pantalla y en el "ayer" de otra, sin que nada
@@ -12876,6 +12971,9 @@ paths:
         ★ v0.15.0 — REQUIERE ADMIN. Lo que los drivers han recibido de vuelta.
         El admin lo procesa manualmente (no hay movimiento de inventario
         automático).
+
+        ★ v0.81.0 — ORDENADO POR `occurred_at` DESCENDENTE, la misma columna
+        por la que filtra, por la misma razón que en `/admin/payments`.
       parameters:
         - name: from
           in: query
@@ -13314,6 +13412,12 @@ paths:
         Incluye los ANULADOS (marcados, con su motivo) — el rastro importa.
         No confundir con /admin/account-payments (v0.17.0), que son pagos del
         vendedor ya aplicados a facturas específicas.
+
+        ★ v0.81.0 — ORDENADO POR `occurred_at` DESCENDENTE, la misma columna
+        por la que filtra. Ordenar por una y filtrar por otra deja los
+        elementos del borde fuera de lugar sin que nadie pueda explicarlo. El
+        contrato no lo decía, y un detalle sin especificar lo decide quien
+        implementa primero, distinto en cada lugar.
       parameters:
         - name: from
           in: query
