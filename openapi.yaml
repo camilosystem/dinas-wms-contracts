@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.81.0
+  version: 0.82.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -223,6 +223,108 @@ info:
          hacia el mismo lado, invertir una comparación habría pasado en verde.
          Cualquier prueba sobre estos dos tiempos necesita las dos
          direcciones.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.82.0 — D11 + D12: EL PRODUCTO QUE VUELVE, DEFINIDO DE UNA VEZ
+    ══════════════════════════════════════════════════════════════════════════
+
+    Tres rutas, cuatro operaciones, cinco schemas. Ninguna forma existente
+    cambia. Es el bloque más grande de la tercera ola y el que más dependía de
+    medir antes de escribir.
+
+    ⚠️⚠️ ERAN CUATRO FUENTES, NO TRES
+      El bloque se planificó sobre tres: devoluciones del driver, ítems
+      rechazados al recibir, y pedidos no entregados. **La cuarta apareció al
+      medir**: `CreditRequestLines`, con exactamente la misma forma —ítem,
+      cantidad, motivo— y con dos filas reales en dev que ninguna de las otras
+      tres contiene.
+
+      Una de ellas son tres unidades acreditadas como dañadas, sin recogida
+      programada y sin devolución. Ese producto está en algún lado y no
+      aparecía en ninguna pantalla.
+
+    ★ EL NOMBRE ES NUEVO A PROPÓSITO
+      Las dos palabras obvias ya estaban tomadas y significaban cosas más
+      angostas: `ProductReturn` es solo la devolución del driver, y
+      "retornados" —el `ReturnedItemView` del manifiesto— es solo los ítems
+      rechazados de una entrega parcial. Su propio comentario explica por qué
+      excluye a los no entregados: *"NO_ENTREGADO no tiene un motivo POR ITEM
+      que ponerle"*.
+
+      Reusar cualquiera de las dos habría hecho que la misma palabra
+      signifique dos conjuntos distintos según quién pregunte. Ese error ya
+      costó dos versiones en este contrato.
+
+    ⚠️⚠️ TRES SON REGISTROS MUERTOS Y UNA YA MOVIÓ DINERO
+      Medido: solo tres tipos de documento viajan a SAP, y `CREDIT_REQUEST` es
+      el único de las cuatro fuentes que produce uno. Las otras tres no salen
+      del WMS.
+
+      Por eso las filas de crédito viajan con su documento de SAP a la vista:
+      disponer de esas unidades es una marca ENCIMA de un documento contable
+      ya emitido, no una decisión sobre algo pendiente. Es la misma clase de
+      distinción que "estructurado no es verificado" — dos cosas que se ven
+      iguales en una lista y no lo son.
+
+    ⚠️⚠️ Y UNA DE LAS CUATRO ES UNA INFERENCIA, NO UNA AFIRMACIÓN
+      `ORDER_NOT_DELIVERED` no tiene fila por ítem y no puede tenerla: su
+      clave es el pedido, una entrega por pedido. Sus ítems se DERIVAN de las
+      líneas del pedido.
+
+      O sea que **nadie contó esas unidades una por una**. Viajan con
+      `is_declared: false`, y la pantalla tiene que decirlo: la diferencia
+      entre "volvieron doce" y "el pedido era de doce y no se entregó" solo
+      existe si alguien la escribe. Sin eso, alguien desecha un conteo que
+      nunca se hizo.
+
+    ★ SE DISPONE UNA CANTIDAD, NO UNA LÍNEA
+      De las cuatro fuentes, **solo las líneas de crédito tienen identidad
+      propia**. Las otras usan claves compuestas y una no tiene fila por ítem.
+      Colgar la disposición de la línea la habría identificado por dónde está
+      y no por qué es — y si la línea se borrara y se volviera a agregar, la
+      disposición vieja aplicaría a la nueva.
+
+      Disponer por CANTIDAD lo resuelve y además cubre el caso real: de doce
+      unidades, ocho al tacho y cuatro a marketing. `pending_quantity` es lo
+      que queda por decidir.
+
+    ⚠️ EL SOLAPAMIENTO NO ES HIPOTÉTICO — ESTÁ AGENDADO
+      Cuando la recogida de una solicitud de crédito se resuelve en una
+      devolución del driver, la misma unidad física existe en dos fuentes. En
+      dev hay una recogida marcada y sin resolver que va a producir
+      exactamente eso.
+
+      La regla: **se dispone donde el producto LLEGÓ**, no donde se
+      contabilizó. Una entrada de crédito con retorno asociado devuelve 409.
+      Y las dos entradas se muestran igual, vinculadas — esconder una haría
+      que el total de la lista no cuadre con lo que hay en el piso y nadie
+      sabría por qué.
+
+    ⚠️ LOS CUATRO MOTIVOS NO SE TRADUCEN
+      Medido: `DANADO/EXPIRADO/NO_LO_QUIERE`, `DANADO/NO_LO_QUIERE/
+      NO_ORDENADO/SHORT`, `NEGOCIO_CERRADO/PEDIDO_CANCELADO`, y
+      `DAMAGED/DOESNT_WANT_IT/MISTAKE/SHORT` — el último en inglés.
+
+      Traducir `DAMAGED` a `DANADO` parece inofensivo hasta que alguien agrega
+      un valor a uno solo de los dos lados. El motivo se muestra junto a su
+      origen, sin unificar. Y el de los no entregados **responde otra
+      pregunta**: es el motivo del pedido, no del producto.
+
+    ★ NINGUNA DISPOSICIÓN MUEVE INVENTARIO, y es decisión y no limitación
+      Medido: los únicos escritores del stock en todo el sistema son el
+      refresco del espejo de SAP y el sembrado. Desechar y guardar para
+      marketing dicen qué se decidió, no dónde quedó una unidad.
+
+      Y por eso NO existe una disposición "vuelve a stock vendible": sería la
+      primera que sí movería inventario, y este bloque está definido por no
+      hacerlo. Sería otro bloque, con otra conversación con SAP.
+
+    ★ DESHACER UNA DISPOSICIÓN NO LLEVA CONTADOR, a diferencia de Dr2
+      Deshacer una entrega de dinero cuenta las veces, porque un `1` es un
+      error de dedo y un `5` es otra cosa. Una disposición es una decisión
+      administrativa sobre producto físico: nadie responde por ella ante un
+      depósito que no cuadra, así que contar las veces sería vigilancia sin
+      destinatario. La asimetría es deliberada.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.81.0 — UN NÚMERO QUE NO SE PODÍA SOSTENER, Y UN ORDEN QUE
@@ -12963,6 +13065,190 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /admin/returned-goods:
+    get:
+      tags: [returns-admin]
+      summary: Todo el producto que volvió, de las cuatro fuentes, por ítem
+      description: >
+        ★ NUEVO en v0.82.0 (D11 + D12). REQUIERE ADMIN o ANALISTA_COMERCIAL.
+
+        ⚠️⚠️ POR QUÉ ESTE BLOQUE EXISTE: hasta v0.81.0 "un producto que
+        volvió" NO ERA UN CONCEPTO en este sistema. Había CUATRO estructuras
+        distintas, en cuatro lugares, sin nada que las leyera juntas — y una
+        de las cuatro no se había contado ni al planificar este bloque.
+        Apareció al medir.
+
+        ★ POR QUÉ EL NOMBRE ES NUEVO Y NO DICE "RETORNO". Las dos palabras
+        obvias ya están tomadas y significan cosas más angostas: `ProductReturn`
+        es SOLO la devolución que registra un driver, y "retornados" —el
+        `ReturnedItemView` que ya comparten el manifiesto y el resumen de
+        ruta— es SOLO los ítems rechazados de un pedido ENTREGADO_PARCIAL.
+        Reusar cualquiera de las dos haría que la misma palabra signifique dos
+        conjuntos distintos según quién pregunte, que es la forma exacta que
+        este contrato ya pagó dos veces.
+
+        ★ LAS CUATRO FUENTES, y no son equivalentes:
+
+          DRIVER_RETURN         el driver registró una devolución en ruta.
+          REJECTED_ON_DELIVERY  el cliente rechazó ítems al recibir.
+          ORDER_NOT_DELIVERED   el pedido entero volvió sin entregarse.
+          CREDIT_REQUEST        una solicitud de crédito con ítems.
+
+        ⚠️⚠️ TRES SON REGISTROS MUERTOS EN EL WMS Y UNA YA MOVIÓ DINERO.
+        Solo `CREDIT_REQUEST` produce un documento en SAP —una nota de
+        crédito—; las otras tres no salen del WMS. Poner las cuatro en una
+        misma lista mezcla tres hechos sin consecuencia contable con uno que
+        ya la tuvo, y por eso las filas de crédito viajan con su documento de
+        SAP a la vista. Disponer de esas unidades es una marca ENCIMA de un
+        documento que ya existe, no una decisión sobre algo pendiente.
+
+        ⚠️⚠️ Y `ORDER_NOT_DELIVERED` ES UNA INFERENCIA, NO UNA AFIRMACIÓN.
+        Su tabla no tiene ni una columna de ítem —la clave es el pedido, una
+        entrega por pedido— así que sus ítems SE DERIVAN de las líneas del
+        pedido. **Nadie contó esas unidades una por una.** Viajan con
+        `is_declared: false` y la pantalla tiene que decirlo: quien disponga
+        de ellas está decidiendo sobre un conteo que nadie hizo.
+
+        ⏰ `from` y `to` son días de Nueva York.
+      parameters:
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date }
+          description: Desde esta fecha, INCLUSIVE. Por defecto, últimos 30 días.
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date }
+        - name: origin
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/ReturnedGoodsOrigin' }
+          description: Una sola fuente. Sin esto, las cuatro.
+        - name: client_code
+          in: query
+          required: false
+          schema: { type: string }
+        - name: item_code
+          in: query
+          required: false
+          schema: { type: string }
+        - name: only_pending
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+          description: >
+            `true` deja solo las entradas con unidades SIN DISPONER. Por
+            defecto vienen todas, dispuestas incluidas — el rastro importa.
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PageSize'
+      responses:
+        '200':
+          description: Página de producto que volvió
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  page: { type: integer }
+                  page_size: { type: integer }
+                  total: { type: integer }
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/ReturnedGoodsEntry' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/returned-goods/disposals:
+    post:
+      tags: [returns-admin]
+      summary: Disponer de unidades que volvieron
+      description: >
+        ★ NUEVO en v0.82.0 (D11 + D12). REQUIERE ADMIN o ANALISTA_COMERCIAL.
+
+        ⚠️⚠️ NINGUNA DISPOSICIÓN MUEVE INVENTARIO, y esto es una decisión, no
+        una limitación. Medido: los únicos escritores del stock en todo el
+        sistema son el refresco del espejo de SAP y el sembrado inicial.
+        Desechar o guardar para marketing son MARCAS ADMINISTRATIVAS: dicen
+        qué se decidió hacer con el producto, no mueven una unidad de ningún
+        lado.
+
+        ★ Y POR ESO NO EXISTE UNA DISPOSICIÓN "VUELVE A STOCK VENDIBLE". Si
+        alguna vez hace falta, NO es una tercera opción de esta lista: sería
+        la primera que sí mueve inventario, y este bloque entero está definido
+        por no hacerlo. Sería otro bloque, con otra conversación con SAP.
+
+        ★ SE DISPONE UNA CANTIDAD, NO UNA LÍNEA. Y la razón es de la medición:
+        de las cuatro fuentes, solo las líneas de crédito tienen identidad
+        propia; las otras usan claves compuestas y una de ellas ni siquiera
+        tiene fila por ítem. Colgar la disposición de la línea la identificaría
+        por DÓNDE ESTÁ y no por QUÉ ES.
+
+        Disponer por cantidad además resuelve el caso real: de doce unidades
+        que volvieron, ocho al tacho y cuatro a marketing. Se hacen dos
+        disposiciones sobre la misma entrada y `pending_quantity` baja a cero.
+
+        ⚠️ NO SE PUEDE DISPONER MÁS DE LO QUE QUEDA PENDIENTE → 400.
+
+        ⚠️ Y UNA ENTRADA DE `CREDIT_REQUEST` CON RETORNO ASOCIADO NO SE
+        DISPONE ACÁ → 409. Cuando la recogida de una solicitud de crédito se
+        resuelve en una devolución del driver, **la misma unidad física existe
+        en dos fuentes a la vez**. Se dispone donde el producto LLEGÓ —la
+        devolución— y no donde se contabilizó. Sin esta regla, doce unidades
+        se podrían desechar dos veces.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReturnedGoodsDisposalWrite' }
+      responses:
+        '201':
+          description: Disposición registrada
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ReturnedGoodsDisposal' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            La entrada es de una solicitud de crédito con retorno asociado:
+            se dispone en el retorno.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /admin/returned-goods/disposals/{disposal_uuid}:
+    delete:
+      tags: [returns-admin]
+      summary: Deshacer una disposición
+      description: >
+        ★ NUEVO en v0.82.0 (D11 + D12). REQUIERE ADMIN o ANALISTA_COMERCIAL.
+        Las unidades vuelven a `pending_quantity`.
+
+        ★ SE PERMITE, y sin dejar contador — a diferencia de deshacer una
+        entrega de dinero (Dr2), donde cada retractación se cuenta. La
+        asimetría es deliberada: una disposición es una decisión
+        administrativa sobre producto físico, no una declaración sobre dinero
+        que otro va a depositar. Nadie responde por ella ante un depósito que
+        no cuadra, así que contar las veces sería vigilancia sin destinatario.
+
+        Queda `decided_by` y `decided_at` en la disposición mientras existe;
+        borrarla la quita entera.
+      parameters:
+        - name: disposal_uuid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204':
+          description: Disposición deshecha
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /admin/returns:
     get:
       tags: [returns-admin]
@@ -16102,6 +16388,184 @@ components:
       description: >
         ★ v0.11.0 — Por qué NO se entregó el pedido completo.
         Solo aplica a NO_ENTREGADO.
+
+    ReturnedGoodsOrigin:
+      type: string
+      enum: [DRIVER_RETURN, REJECTED_ON_DELIVERY, ORDER_NOT_DELIVERED, CREDIT_REQUEST]
+      description: >
+        ★ NUEVO en v0.82.0 (D11 + D12). De cuál de las cuatro estructuras sale
+        esta entrada. NO son equivalentes:
+
+          DRIVER_RETURN         `ProductReturnItems`. Afirmado por el driver.
+          REJECTED_ON_DELIVERY  `RejectedOrderItems`. Afirmado al recibir.
+          ORDER_NOT_DELIVERED   DERIVADO de las líneas del pedido. Nadie
+                                contó estas unidades — ver `is_declared`.
+          CREDIT_REQUEST        `CreditRequestLines`. **La única que ya
+                                produjo un documento en SAP.**
+
+    ReturnedGoodsDisposition:
+      type: string
+      enum: [DESECHADO, ALMACENADO_MARKETING]
+      description: >
+        ★ NUEVO en v0.82.0 (D11 + D12). Qué se decidió hacer con las unidades.
+
+        ⚠️ LAS DOS SON MARCAS ADMINISTRATIVAS Y NINGUNA MUEVE INVENTARIO. El
+        stock lo escribe únicamente el refresco del espejo de SAP; esto dice
+        qué se decidió, no dónde quedó una unidad.
+
+        No hay un valor para "vuelve a stock vendible" a propósito: ése sería
+        el primero que sí movería inventario, y es otro bloque.
+
+    ReturnedGoodsEntry:
+      type: object
+      description: >
+        ★ NUEVO en v0.82.0 (D11 + D12). UN ÍTEM QUE VOLVIÓ, venga de donde
+        venga. Es la unidad de esta pantalla y el concepto que no existía.
+      properties:
+        entry_ref:
+          type: string
+          description: >
+            Identifica esta entrada de forma estable. Es opaco: se construye
+            del origen más la clave de su fuente, y **no se debe descomponer
+            ni construir del lado del cliente**.
+
+            ⚠️ POR QUÉ ES OPACO Y NO UN UUID: medido, de las cuatro fuentes
+            solo las líneas de crédito tienen identidad propia. Las otras usan
+            claves compuestas y una no tiene fila por ítem. Un uuid habría
+            exigido inventarles identidad a tres estructuras existentes; esto
+            no toca ninguna.
+
+            Se manda tal cual al crear una disposición.
+        origin: { $ref: '#/components/schemas/ReturnedGoodsOrigin' }
+        item_code: { type: string }
+        item_name: { type: string, nullable: true }
+        quantity:
+          type: number
+          format: double
+          description: Cuántas unidades volvieron por esta entrada.
+        pending_quantity:
+          type: number
+          format: double
+          description: >
+            Cuántas quedan SIN DISPONER: `quantity` menos todo lo ya
+            dispuesto. Cero significa que se decidió sobre todas — no que la
+            entrada haya desaparecido.
+        is_declared:
+          type: boolean
+          description: >
+            ⚠️ `false` significa que NADIE CONTÓ ESTAS UNIDADES. Solo ocurre
+            con `ORDER_NOT_DELIVERED`, cuya tabla no tiene fila por ítem: la
+            cantidad se deriva de la línea del pedido que no se entregó.
+
+            Es un hecho del dato, no una advertencia de calidad. Pero la
+            pantalla tiene que mostrarlo, porque quien disponga de esas
+            unidades está decidiendo sobre un conteo que nadie hizo — y la
+            diferencia entre "volvieron doce" y "el pedido era de doce y no se
+            entregó" solo se ve si alguien la escribe.
+        occurred_at:
+          type: string
+          format: date-time
+          description: >
+            Cuándo volvió. ⏰📱 Hereda la regla 📱 en las fuentes que lo toman
+            del dispositivo: no se puede asumir que sea reciente ni que sea
+            anterior al registro.
+        client_code: { type: string, nullable: true }
+        client_name: { type: string, nullable: true }
+        origin_reason:
+          type: string
+          nullable: true
+          description: >
+            El motivo TAL COMO LO GUARDA SU FUENTE, sin traducir.
+
+            ⚠️⚠️ LAS CUATRO FUENTES HABLAN VOCABULARIOS DISTINTOS y este
+            contrato NO los unifica. Medido: `DANADO/EXPIRADO/NO_LO_QUIERE`,
+            `DANADO/NO_LO_QUIERE/NO_ORDENADO/SHORT`,
+            `NEGOCIO_CERRADO/PEDIDO_CANCELADO`, y
+            `DAMAGED/DOESNT_WANT_IT/MISTAKE/SHORT` — el último en inglés.
+
+            Traducir `DAMAGED` a `DANADO` parece inofensivo hasta que alguien
+            agrega un valor a uno solo de los dos lados. La pantalla muestra
+            el motivo junto a su origen; quien quiera agrupar por motivo
+            necesita primero una decisión que nadie ha tomado.
+
+            ⚠️ Y EN `ORDER_NOT_DELIVERED` ESTE CAMPO RESPONDE OTRA PREGUNTA:
+            es el motivo del PEDIDO —el negocio estaba cerrado— y no dice nada
+            sobre por qué volvió ese producto. No se puede leer como los otros
+            tres.
+        sap_credit_note_doc_num:
+          type: string
+          nullable: true
+          description: >
+            ⚠️ Solo en `CREDIT_REQUEST`, y es lo que separa esta fuente de las
+            otras tres: **la nota de crédito YA EXISTE EN SAP**. Disponer de
+            estas unidades es una marca encima de un documento contable
+            emitido, no una decisión sobre algo pendiente.
+
+            `null` mientras el sincronizador no haya terminado — eso es
+            "todavía no llegó a SAP", no un error.
+        linked_return_id:
+          type: string
+          nullable: true
+          description: >
+            ⚠️ Solo en `CREDIT_REQUEST`. Si la recogida de esa solicitud se
+            resolvió en una devolución del driver, acá está su identificador —
+            y entonces **la misma unidad física existe en dos entradas de esta
+            lista**.
+
+            Cuando esto no es nulo, la entrada NO SE PUEDE DISPONER: se
+            dispone en la devolución, que es donde el producto llegó. La
+            pantalla debe mostrar el vínculo en vez de esconder una de las
+            dos: esconderla haría que el total de la lista no cuadre con lo
+            que hay en el piso, y nadie sabría por qué.
+        disposals:
+          type: array
+          description: >
+            Lo ya decidido sobre esta entrada. Vacío es un estado legítimo:
+            significa que nadie decidió todavía.
+          items: { $ref: '#/components/schemas/ReturnedGoodsDisposal' }
+
+    ReturnedGoodsDisposalWrite:
+      type: object
+      required: [entry_ref, disposition, quantity]
+      description: >
+        ★ NUEVO en v0.82.0 (D11 + D12). Lo que la oficina manda al disponer.
+      properties:
+        entry_ref:
+          type: string
+          description: Tal como vino en la entrada. No se construye del lado del cliente.
+        disposition: { $ref: '#/components/schemas/ReturnedGoodsDisposition' }
+        quantity:
+          type: number
+          format: double
+          exclusiveMinimum: 0
+          description: >
+            Cuántas unidades. No puede exceder `pending_quantity` → 400.
+
+            Se puede disponer en varias veces con destinos distintos: ocho al
+            tacho y cuatro a marketing son dos llamadas sobre la misma
+            entrada.
+        note:
+          type: string
+          nullable: true
+
+    ReturnedGoodsDisposal:
+      type: object
+      description: >
+        ★ NUEVO en v0.82.0 (D11 + D12). Una decisión tomada sobre unidades que
+        volvieron.
+      properties:
+        disposal_uuid: { type: string, format: uuid }
+        disposition: { $ref: '#/components/schemas/ReturnedGoodsDisposition' }
+        quantity: { type: number, format: double }
+        note: { type: string, nullable: true }
+        decided_by:
+          type: string
+          description: >
+            La CUENTA que decidió, no la persona. Con una cuenta compartida
+            deja de identificar a nadie — es el mismo riesgo ya escrito para
+            `decided_by` de los pagos de cartera, y se resuelve con una cuenta
+            por persona, no cerrando el rol.
+        decided_at: { type: string, format: date-time }
 
     ItemRejectionReason:
       type: string
