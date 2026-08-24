@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.77.0
+  version: 0.78.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -121,6 +121,112 @@ info:
       de login está mal por definición, aunque hoy pase los tests: los datos
       de prueba suelen tener cuenta para los tres o cuatro vendedores que se
       usan, y el 84% que no la tiene no aparece en ningún test.
+
+    ══════════════════════════════════════════════════════════════════════════
+    📱 REGLA GLOBAL — `occurred_at` LO AFIRMA EL DISPOSITIVO, NO LO OBSERVA
+       EL SERVIDOR
+    ══════════════════════════════════════════════════════════════════════════
+
+    ★ v0.78.0. Vale para las cinco puertas que lo aceptan: entregar un pedido,
+    marcar una recogida como no realizada, registrar un retorno, registrar un
+    pago de ruta y anularlo.
+
+    Todas describen `occurred_at` como "la hora real". Es cierto en su
+    intención y engañoso si se lee como una garantía: **ese valor sale del
+    reloj del teléfono, y este contrato ya trata ese reloj como no
+    confiable.** Es la misma razón por la que la vigencia de un aviso la
+    resuelve el servidor y por la que la marca de agua de un `since` la emite
+    el servidor y no el cliente.
+
+    ⚠️ NO ES UNA POSIBILIDAD TEÓRICA, ESTÁ MEDIDA
+      El PRIMER pago de ruta real registrado con este contrato quedó así:
+
+        occurred_at   2026-08-24T16:43:02Z
+        recorded_at   2026-08-24T16:42:14.907Z
+
+      La visita ocurrió CUARENTA Y OCHO SEGUNDOS DESPUÉS de haberse
+      registrado. Es imposible para una visita de verdad, y nada lo impidió
+      porque nada decía que debiera impedirlo.
+
+    ★ LO QUE EL SERVIDOR HACE, Y LAS DOS COSAS QUE NO HACE
+
+      · LO ACEPTA, aunque sea posterior a `recorded_at`. **No se rechaza.**
+        Bloquear a un driver parado frente al cliente por un desfase de reloj
+        es peor que guardar una hora rara — es el mismo argumento que hizo
+        opcional la foto del retorno en Dr3, y la misma conclusión: bloquear
+        la operación para proteger el dato termina perdiendo los dos.
+
+      · NO SE RECORTA EN SILENCIO a `recorded_at`. Recortarlo cambiaría un
+        valor sospechoso por uno PLAUSIBLE, que es el antipatrón que este
+        contrato persigue desde que un `?? .efectivo` dejó todos los pagos
+        mostrándose como efectivo durante semanas. Un dato raro que se ve
+        raro es mejor que uno arreglado que no se puede auditar.
+
+      · NO SE INVENTA cuando falta: es nullable en las cinco puertas, y su
+        ausencia significa "la app no lo mandó", no "ocurrió al llegar".
+
+    ★ QUIEN AGRUPE POR DÍA TIENE QUE DECIR CUÁL DE LOS DOS USA
+      Son dos preguntas distintas y las dos son legítimas:
+
+        · "¿Qué hizo el driver en su jornada?"  → `occurred_at`
+        · "¿Qué recibió el sistema ese día?"    → `recorded_at`
+
+      Elegir una sin decirlo hace que dos pantallas del mismo sistema
+      muestren totales distintos para el mismo día, y que nadie pueda explicar
+      la diferencia. ⏰ sigue rigiendo: cualquiera de los dos se convierte a
+      día de Nueva York, no a UTC ni al huso del dispositivo.
+
+    ★ EL DESACUERDO ES VISIBLE, y eso es lo que hace segura la regla
+      MEDIDO: las nueve superficies de lectura que exponen `occurred_at`
+      exponen TAMBIÉN `recorded_at`. Quien quiera saber si una hora declarada
+      es creíble puede compararlas sin pedir nada más. Aceptar un dato que no
+      se puede auditar sería otra cosa; aceptar uno que sí, es una decisión.
+
+    ⚠️ DOS PUERTAS DONDE `occurred_at` ENTRA Y NO SALE NUNCA
+      También medido: `POST /dispatch/orders/{order_uuid}/deliver` y
+      `POST /dispatch/pickups/{request_uuid}/not-collected` aceptan
+      `occurred_at` y **ninguna superficie de lectura lo devuelve**. Ahí la
+      hora declarada no se puede comparar con nada, ni auditar, ni corregir —
+      y nadie notaría si fuera absurda.
+
+      No se resuelve en esta versión a propósito: exponerlo es superficie
+      nueva y hay que decidir dónde. Queda escrito para que sea una deuda
+      conocida y no un descubrimiento.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.78.0 — `occurred_at` ES UNA AFIRMACIÓN, NO UNA OBSERVACIÓN
+    ══════════════════════════════════════════════════════════════════════════
+
+    Solo texto. Ninguna forma cambia. Se agrega la regla global 📱 arriba de
+    este changelog.
+
+    ★ DE DÓNDE SALIÓ
+      Del primer pago de ruta real que se registró con este contrato, que
+      llegó con `occurred_at` 48 segundos POSTERIOR a `recorded_at`. Nadie
+      buscaba eso: apareció al pedir el payload crudo de la superficie de
+      lectura, que se pidió por otra razón —para que el Dashboard no
+      verificara contra su propia construcción—.
+
+      Es la tercera vez en dos días que el hallazgo llega por mirar un dato
+      real en vez de releer. Vale anotarlo: **pedir el payload crudo tiene un
+      rendimiento que no viene de lo que se fue a buscar.**
+
+    ★ QUÉ DICE LA REGLA, en una línea
+      `occurred_at` sale del reloj del teléfono. Se acepta tal como llega, no
+      se rechaza y no se recorta; el desacuerdo con `recorded_at` queda
+      visible; y quien agrupe por día debe decir cuál de los dos usa.
+
+    ★ LA MISMA FAMILIA QUE `invoice_doc_nums`
+      Aquella dice "estructurado no es verificado". Ésta dice "declarado no es
+      observado". Las dos guardan de buena fe lo que dice quien está en la
+      calle, y las dos exigen que la pantalla no lo presente como si el
+      sistema lo hubiera comprobado.
+
+    ⚠️ Y UNA DEUDA QUE QUEDA NOMBRADA
+      Dos puertas aceptan `occurred_at` y ninguna lectura lo devuelve:
+      entregar un pedido y marcar una recogida como no realizada. Ahí la hora
+      declarada no se puede auditar. No se arregla acá porque exponerlo es
+      superficie nueva y hay que decidir dónde.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.77.0 — EL CUPO DE VENTA CONTROLADA PASA A SER POR VENDEDOR
