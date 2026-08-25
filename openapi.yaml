@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.83.0
+  version: 0.84.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -223,6 +223,68 @@ info:
          hacia el mismo lado, invertir una comparación habría pasado en verde.
          Cualquier prueba sobre estos dos tiempos necesita las dos
          direcciones.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.84.0 — UNA DISTINCIÓN QUE VIVE SOLO EN PROSA SE IMPLEMENTA
+    PLANA
+    ══════════════════════════════════════════════════════════════════════════
+
+    Un campo nuevo. Aditivo. Ningún consumidor tiene que cambiar para seguir
+    funcionando, y uno tiene que cambiar para dejar de mentir.
+
+    ★ `ReturnedGoodsEntry.origin_reason_scope` — enum `ITEM | ORDER`
+      Dice DE QUÉ HABLA `origin_reason` en esta entrada. `ITEM` en las tres
+      fuentes donde alguien afirmó algo sobre el producto; `ORDER` en
+      `ORDER_NOT_DELIVERED`, donde el motivo es del pedido y nadie afirmó
+      nunca por qué volvió esa unidad.
+
+    🔴 POR QUÉ NO ALCANZÓ LO QUE YA ESTABA ESCRITO
+      La advertencia existía desde v0.82.0, en prosa, dentro de la
+      descripción de `origin_reason`: "EN `ORDER_NOT_DELIVERED` ESTE CAMPO
+      RESPONDE OTRA PREGUNTA". El agente del Dashboard la leyó, puso el
+      motivo junto a su origen —que era la otra mitad del consejo, y la
+      cumplió— y aun así dibujó los dos motivos con la misma clase, la misma
+      tipografía y la misma posición. Lo midió sobre su propio render:
+      **¿se dibujan IGUAL? SÍ.**
+
+      Y lo dijo mejor de lo que yo lo había escrito: poner el motivo junto a
+      su origen resuelve **de qué diccionario es cada palabra**; no resuelve
+      que una responde **otra pregunta**. Son dos problemas. El contrato
+      trataba el segundo como una nota al pie del primero.
+
+    ★ LA COMPARACIÓN CONTROLADA QUE NADIE DISEÑÓ
+      La misma fila sufre el mismo mal dos veces:
+
+        quantity      se deriva del pedido · nadie la contó
+        origin_reason es del pedido        · nadie lo afirmó del producto
+
+      A la primera le puse un CAMPO en v0.82.0 (`is_declared`). A la segunda
+      le puse un PÁRRAFO. Mismo consumidor, misma pantalla, misma semana: la
+      mitad con campo se dibujó bien a la primera y la mitad con párrafo se
+      dibujó plana.
+
+      **La prosa advierte; la forma obliga.** Si una distinción importa lo
+      suficiente como para escribirla, importa lo suficiente como para que
+      sea un campo.
+
+      Es la segunda vez en dos días que esta forma cobra. La primera: el
+      changelog nombraba en prosa los valores de `ReturnedGoodsDisposition`
+      —"desechar y guardar para marketing"— mientras el enum literal decía
+      `DESECHADO / ALMACENADO_MARKETING`, y el consumidor que leyó la prosa
+      escribió `DISCARDED`. Ahí también había un schema con nombre a un
+      párrafo de distancia, y ahí también ganó el párrafo.
+
+    ★ LA FILA DE `ORDER_NOT_DELIVERED` ES UNA PROYECCIÓN, NO UN REGISTRO
+      Es la forma que quedó nombrada, y vale más que el campo: esa fila viste
+      ropa de producto y habla del pedido. Dos campos suyos traen verdad de
+      otro nivel, y a partir de esta versión los dos lo dicen.
+
+    ★ LO QUE NO CAMBIA
+      Los cuatro vocabularios de `origin_reason` siguen SIN unificar, por la
+      razón de siempre: traducir `DAMAGED` a `DANADO` parece inofensivo hasta
+      que alguien agrega un valor a un solo lado. `origin_reason` sigue
+      llegando tal como lo guarda su fuente. Este campo no traduce nada:
+      dice de qué habla.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.83.0 — v0.82.0 ERA YAML VÁLIDO Y OpenAPI INVÁLIDO
@@ -16543,6 +16605,52 @@ components:
             es el motivo del PEDIDO —el negocio estaba cerrado— y no dice nada
             sobre por qué volvió ese producto. No se puede leer como los otros
             tres.
+
+            ★ v0.84.0 — ESA ADVERTENCIA VIVIÓ EN PROSA Y SE IMPLEMENTÓ PLANA.
+            Ahora la lleva `origin_reason_scope`, aquí al lado. Lee ése, no
+            este párrafo.
+        origin_reason_scope:
+          type: string
+          enum: [ITEM, ORDER]
+          description: >
+            ★ NUEVO en v0.84.0. DE QUÉ HABLA `origin_reason` en esta entrada.
+            Presente siempre, en las cuatro fuentes.
+
+              ITEM   el motivo habla de ESTE producto. Alguien lo afirmó.
+                     `DRIVER_RETURN`, `REJECTED_ON_DELIVERY`, `CREDIT_REQUEST`.
+              ORDER  el motivo habla del PEDIDO, no de este producto. Nadie
+                     afirmó nunca por qué volvió esta unidad.
+                     Hoy solo `ORDER_NOT_DELIVERED`.
+
+            ⚠️⚠️ POR QUÉ EXISTE ESTE CAMPO Y NO ALCANZABA LA ADVERTENCIA DE
+            ARRIBA. La advertencia estaba escrita desde v0.82.0, en prosa, dos
+            líneas más arriba de aquí. El primer consumidor que dibujó la
+            pantalla puso los dos motivos en la misma clase, la misma
+            tipografía y la misma posición, y midiendo su propio render
+            confirmó que se dibujan IGUAL. No fue descuido: **una distinción
+            que vive solo en prosa se implementa plana.**
+
+            La prueba de que el problema era la forma y no la atención está en
+            la misma fila. `quantity` sufre exactamente el mismo mal —también
+            se deriva del pedido, también nadie la contó— y lleva `is_declared`
+            desde v0.82.0. Esa mitad se dibujó bien a la primera. La mitad con
+            campo sobrevivió; la mitad con párrafo, no.
+
+            ★ EN `ORDER_NOT_DELIVERED` LA FILA ENTERA ES UNA PROYECCIÓN, NO UN
+            REGISTRO. Dos de sus campos traen verdad del pedido vestida de
+            producto, y ahora los dos están marcados:
+
+              quantity      → `is_declared: false`         (nadie la contó)
+              origin_reason → `origin_reason_scope: ORDER` (no habla de esto)
+
+            ★ CÓMO SE DIBUJA, para que no lo decida quien implemente primero:
+            el motivo con `scope: ORDER` **se muestra**, bajo un rótulo que
+            diga que es del pedido, y NUNCA en la misma posición muda que uno
+            con `scope: ITEM`. No se oculta: `NEGOCIO_CERRADO` explica por qué
+            volvió el pedido entero y esa información es real. No se traduce
+            ni se unifica: los cuatro vocabularios siguen sin unificar y eso no
+            cambia aquí. Lo único que cambia es que deja de fingir que
+            responde la pregunta del producto.
         sap_credit_note_doc_num:
           type: string
           nullable: true
