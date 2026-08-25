@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.84.0
+  version: 0.85.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -225,6 +225,138 @@ info:
          direcciones.
 
     ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.85.0 — CINCO REGLAS QUE COSTARON UNA SESIÓN, ESCRITAS DONDE
+    LOS CUATRO CONSUMIDORES LAS LEEN
+    ══════════════════════════════════════════════════════════════════════════
+
+    NINGUNA FORMA CAMBIA. Ni un campo, ni un tipo, ni una ruta, ni un enum.
+    Solo texto, y dos líneas de prosa corregidas.
+
+    Se escribe aquí y no en las notas de nadie porque este archivo es lo único
+    que los ocho repos comparten. Una regla que vive en un chat se pierde
+    cuando el chat se cierra.
+
+    ──────────────────────────────────────────────────────────────────────────
+    ★ 1. EL UNIVERSO SE ENUMERA DESDE LA DECLARACIÓN, NUNCA DESDE LA
+         OBSERVACIÓN
+
+      Una guarda que construye su universo desde la misma fuente que audita no
+      puede fallar: no hay desde dónde ver lo que falta.
+
+      Tres instancias medidas, las tres del mismo defecto y ninguna vista
+      hasta que alguien enumeró desde el otro lado:
+
+        · La herramienta de diff del Arquitecto contaba propiedades desde lo
+          que `allOf` resolvía → 126 de 131 schemas comparados, y el informe
+          se veía idéntico al de 131.
+        · La guarda de cobertura del Dashboard enumeraba desde `git ls-files`
+          → un archivo sin rastrear era invisible, y su fixture aparecía
+          huérfana. 112 operaciones donde había 115.
+        · El instrumento de "declarado y nunca recibido" contaba sus puntos
+          ciegos desde el acumulador, que solo se llena al visitar una
+          instancia → imprimía `sin observar: 0` teniendo 95.
+
+      El tercero lo delató un CERO IMPOSIBLE: quien lo escribió sabía que una
+      ruta venía vacía. Un punto ciego solo se ve cuando un número no puede
+      ser cierto.
+
+    ──────────────────────────────────────────────────────────────────────────
+    ★ 2. LA ESCALERA DE TRES ESCALONES: PROSA, CAMPO, TIPO
+
+      La misma distinción, escrita de tres maneras, obliga a tres personas
+      distintas — o a ninguna:
+
+        PROSA                      se puede ignorar sin que nada se rompa
+        UN CAMPO                   el CONSUMIDOR tiene que decidir qué hacer
+        FUNCIÓN TOTAL SIN DEFAULT  el AUTOR no puede agregar sin decidir
+
+      La comparación controlada que nadie diseñó y que este contrato produjo
+      solo: la fila de `ORDER_NOT_DELIVERED` sufre el mismo mal dos veces —
+      `quantity` se deriva del pedido y nadie la contó; `origin_reason` es del
+      pedido y nadie lo afirmó del producto. A la primera se le puso un CAMPO
+      en v0.82.0 (`is_declared`). A la segunda, un PÁRRAFO.
+
+      Mismo consumidor, misma pantalla, misma semana: **la mitad con campo se
+      dibujó bien a la primera; la mitad con párrafo se dibujó plana.**
+
+      El tercer escalón lo puso el middleware al implementar v0.84.0: en vez
+      de acertar el ámbito en los cinco sitios donde se arma la entrada, lo
+      hizo propiedad calculada del origen con una función TOTAL y sin default.
+      No es que los cinco sitios estén verificados — **es que ninguno decide**,
+      y un origen nuevo no compila hasta elegir su ámbito.
+
+    ──────────────────────────────────────────────────────────────────────────
+    ★ 3. UN CAMPO OBLIGATORIO QUE EL SERVIDOR NO MANDA NO FALLA
+
+      Da `false`, y `false` se ve idéntico a que la respuesta sea "no".
+
+      Medido en v0.84.0: el Dashboard adoptó el contrato antes de que el
+      middleware sirviera `origin_reason_scope`. Tipar el campo como
+      obligatorio —que es lo que el contrato dice— hacía que
+      `scope === 'ORDER'` diera falso en las nueve entradas y la pantalla
+      volviera a dibujar plano **exactamente lo que v0.84.0 vino a arreglar,
+      sin que nada se pusiera en rojo.**
+
+      Las dos salidas fáciles estaban cerradas: derivarlo del origen (prohibido)
+      y tratarlo como `ITEM` por defecto (el silencio anterior). La correcta es
+      un TERCER ESTADO: ausente no es ninguno de los dos valores, es
+      DESCONOCIDO, y se dice.
+
+      ⚠️ Y un tercer estado en pantalla resuelve qué se dibuja, NO si el
+      sistema se entera. Una advertencia solo avisa si alguien está mirando esa
+      pantalla en ese momento. Lo que sí se entera es un instrumento que
+      responda, en cualquier momento: **qué partes del contrato adopté y nunca
+      recibí.**
+
+    ──────────────────────────────────────────────────────────────────────────
+    ★ 4. EN BASE COMPARTIDA, UN CONTEO ES UNA MEDICIÓN CON HORA
+
+      No es una propiedad. Queda rancio en el momento en que se toma.
+
+      Medido: el middleware contó cinco entradas el 24 de agosto; el Dashboard
+      contó nueve el 25. Ninguno se equivocó — en medio, otro agente escribió
+      cuatro. El middleware se NEGÓ a confirmar sobre un conjunto cuyo tamaño
+      no coincidía, y esa negativa fue correcta aunque la explicación
+      resultara benigna.
+
+      Todo conteo contra dev viaja con la hora a la que se tomó, o no
+      significa nada.
+
+    ──────────────────────────────────────────────────────────────────────────
+    ★ 5. UN CONTROL QUE EXISTE PARA QUE EL SERVIDOR LO RECHACE ES UN CONTROL
+         QUE MIENTE
+
+      Lo nombró el Dashboard al construir D11+D12: una entrada vinculada no
+      ofrece el botón de disponer, porque el servidor la rechazaría con 409.
+      Se muestra el motivo, no el botón.
+
+      Y su reverso, encontrado en la misma pantalla: una entrada ya dispuesta
+      deja de ofrecer "decidir" y pasa a ofrecer "deshacer". No se queda sin
+      acciones — le queda OTRA. El objetivo no es esconder controles: es que el
+      que quede sea el que de verdad está disponible.
+
+    ──────────────────────────────────────────────────────────────────────────
+    ★ Y LA CORRECCIÓN DE PROSA QUE MOTIVÓ TODO ESTO
+
+      Dos líneas del changelog de v0.82.0 nombraban las disposiciones en
+      castellano corriente —"ocho al tacho y cuatro a marketing"— mientras el
+      enum literal, en un schema con nombre a un párrafo de distancia, decía
+      `DESECHADO` y `ALMACENADO_MARKETING`. Un consumidor leyó la prosa y
+      escribió `DISCARDED`.
+
+      Lo corrigió un 400 del servidor, y ahí está la parte incómoda, dicha por
+      quien lo cometió: **el sondeo no fue el error — el sondeo TAPÓ el error,
+      dándole la respuesta correcta por otra vía.** Un error que produce el
+      resultado correcto no se corrige solo, porque nada lo señala.
+
+      Regla que queda, y es la que salva el caso siguiente: **para saber qué
+      mandar, el schema con nombre. El sondeo, después, para confirmar
+      despliegue. Si el sondeo contradice al schema, es un hallazgo que se
+      reporta — nunca un dato que se copia.**
+
+      Desde esta versión, un changelog que mencione un valor de enum LO CITA.
+
+    ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.84.0 — UNA DISTINCIÓN QUE VIVE SOLO EN PROSA SE IMPLEMENTA
     PLANA
     ══════════════════════════════════════════════════════════════════════════
@@ -398,8 +530,12 @@ info:
       disposición vieja aplicaría a la nueva.
 
       Disponer por CANTIDAD lo resuelve y además cubre el caso real: de doce
-      unidades, ocho al tacho y cuatro a marketing. `pending_quantity` es lo
-      que queda por decidir.
+      unidades, ocho `DESECHADO` y cuatro `ALMACENADO_MARKETING`.
+      `pending_quantity` es lo que queda por decidir.
+
+      (v0.85.0 cita aquí los valores literales. Antes decía "ocho al tacho y
+      cuatro a marketing", y un consumidor que leyó esta línea en vez del
+      schema escribió `DISCARDED`. Ver la nota de método de v0.85.0.)
 
     ⚠️ EL SOLAPAMIENTO NO ES HIPOTÉTICO — ESTÁ AGENDADO
       Cuando la recogida de una solicitud de crédito se resuelve en una
@@ -13299,7 +13435,7 @@ paths:
         por DÓNDE ESTÁ y no por QUÉ ES.
 
         Disponer por cantidad además resuelve el caso real: de doce unidades
-        que volvieron, ocho al tacho y cuatro a marketing. Se hacen dos
+        que volvieron, ocho `DESECHADO` y cuatro `ALMACENADO_MARKETING`. Se hacen dos
         disposiciones sobre la misma entrada y `pending_quantity` baja a cero.
 
         ⚠️ NO SE PUEDE DISPONER MÁS DE LO QUE QUEDA PENDIENTE → 400.
