@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.94.0
+  version: 0.95.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -223,6 +223,76 @@ info:
          hacia el mismo lado, invertir una comparación habría pasado en verde.
          Cualquier prueba sobre estos dos tiempos necesita las dos
          direcciones.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.95.0 — TRES HUECOS DE D6 QUE SOLO SE VEN IMPLEMENTÁNDOLO
+    ══════════════════════════════════════════════════════════════════════════
+
+    Solo texto. Ninguna forma cambia. Los tres los encontró el agente del
+    middleware escribiendo el código, no leyendo el contrato — que es, otra
+    vez, la única forma de encontrarlos.
+
+    ★ 1. AUSENTE Y `null` NO SON LO MISMO, Y v0.94.0 NO LO DECÍA
+      `invoice_discount_pct` y `freight_amount` son nullable Y opcionales a la
+      vez. Con un tipo nullable pelado, **"no lo toques" y "quítalo" llegan
+      los dos como `null`**, y editar cantidades borraría el flete sin que
+      nadie lo pidiera.
+
+      Ausente deja el valor como está. `null` lo quita. El cliente nunca manda
+      `null` para decir "déjalo igual". **Ausente no es un valor, y tratarlo
+      como uno produce una decisión que nadie tomó** — la misma forma que el
+      tercer estado del ámbar y que `is_declared`.
+
+    ★ 2. LA DECISIÓN ANTERIOR SE BORRA EN TODA EDICIÓN
+      El agente decidió borrarla cuando la edición vuelve a retener, con el
+      argumento correcto: dejarla mostraría "aprobada por Fulano" al lado de
+      "retenida". **Es exactamente el defecto que el agente del Dashboard
+      midió en su pantalla el mismo día**, con `hold_reason` y `decision_note`
+      dibujados en la misma celda sin etiqueta. Dos agentes, un problema, y el
+      arreglo aterrizó en la capa correcta: no se dibujan con cuidado dos
+      estados que no deberían coexistir — se quita el que sobra.
+
+      ⚠️ EL CONTRATO EXTIENDE LA REGLA A TODA EDICIÓN, retenga o no. Fulano
+      aprobó OTRAS líneas. Dejar su nombre sobre un pedido cuyo contenido
+      cambió después **es una mentira más silenciosa que la primera, porque se
+      ve perfectamente coherente.**
+
+    ★ 3. EL FILTRO DEL DELTA, Y LA MEJOR FRASE DEL BLOQUE
+      `/sync/orders` es incremental por `since`. Editar no mueve la fecha de
+      decisión ni la de recepción, así que sin agregar la marca de edición al
+      filtro, **un pedido editado nunca vuelve a aparecer en el delta.**
+
+      El agente lo dijo así: *"el campo nuevo habría estado perfectamente
+      implementado y no habría llegado nunca."*
+
+      **Un campo que se agrega a un canal incremental necesita su marca de
+      tiempo en el filtro del canal, o está implementado y es inalcanzable.**
+      No falla, no avisa: simplemente no llega.
+
+    ──────────────────────────────────────────────────────────────────────────
+    ★ MÉTODO — DOS REGLAS MÁS, LAS DOS DE HOY
+
+    ★ 9. `[0]` ES UN RESUMEN
+      El instrumento de "declarado y nunca recibido" cosechaba `trucks[0]`, y
+      el único camión con deuda de bin era el tercero. Reportó "no se pudo
+      comprobar": **correcto en su forma y falso en su causa** — la ruta sí se
+      sondeó; lo que no se miró fue la instancia que ejercitaba el campo.
+
+      **El punto ciego no estaba en la ruta: estaba en la MUESTRA.** Un
+      instrumento que resume puede ocultar lo que resume, y tomar el primer
+      elemento es resumir. La corrección no es sondear todo: es **decir cuántos
+      había y cuántos se miraron.**
+
+    ★ 10. UN ERROR SUSURRA O GRITA SEGÚN CUÁNTA DATA HAYA
+      El `defaultValue` de la columna de versión salía en 0 mientras la
+      entidad arranca en 1: los 24 pedidos existentes habrían reportado 0 y
+      los nuevos 1. **Con 24 filas ese error susurra** — nadie ve un 0 y
+      sospecha, y `expected_version=0` funciona igual de bien hasta que un día
+      no.
+
+      Es la misma regla que ya teníamos con las migraciones —el riesgo es
+      inversamente proporcional al tamaño de los datos— aplicada a un valor
+      por defecto en vez de a una migración que falla.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.94.0 — CUATRO COSAS QUE SALIERON DE MEDIR, NO DE DISEÑAR
@@ -10130,6 +10200,28 @@ paths:
         Un pedido que cambia sin explicación llega al vendedor como un error
         del sistema. `edit_note` viaja hasta su app.
 
+        ★ LA DECISIÓN ANTERIOR SE BORRA AL EDITAR
+        `decided_by`, `decided_at` y `decision_note` se limpian **en toda
+        edición**, retenga o no.
+
+        Si vuelve a retener, dejarlos mostraría "aprobada por Fulano" al lado
+        de "retenida" y nadie sabría cuál de las dos es de ahora — es
+        exactamente el defecto que el agente del Dashboard midió en su
+        pantalla, con `hold_reason` y `decision_note` dibujados en la misma
+        celda sin etiqueta.
+
+        ⚠️ Y SI **NO** VUELVE A RETENER TAMBIÉN SE BORRAN, que es la mitad
+        menos obvia: Fulano aprobó OTRAS líneas. Dejar su nombre sobre un
+        pedido cuyo contenido cambió después es una mentira más silenciosa que
+        la primera, porque se ve perfectamente coherente. Un pedido editado
+        que sigue pasando cartera queda como uno que pasó al llegar: aprobado
+        sin decisor humano.
+
+        ⚠️ LO QUE CUESTA: se pierde quién había aprobado la versión anterior.
+        `last_edited_by` dice quién editó, no quién había aprobado antes. Si
+        algún día hace falta esa auditoría, es un rastro aparte — no un
+        cambio a estos campos.
+
         ★ EL VENDEDOR SE ENTERA, Y CON EL DETALLE
         Ver `GET /sync/orders`: una orden editada viaja con sus líneas
         completas, no solo con su estado. Sin eso la app del vendedor
@@ -10168,12 +10260,33 @@ paths:
                   type: number
                   format: double
                   nullable: true
-                  description: Descuento de documento. Ausente = se deja como está.
+                  description: >
+                    Descuento de documento.
+
+                    ⚠️⚠️ AUSENTE Y `null` SON COSAS DISTINTAS, y v0.94.0 no lo
+                    decía con suficiente fuerza:
+
+                      campo AUSENTE  → "no lo toques", queda como está
+                      campo en null  → "quítalo", el pedido se queda sin él
+
+                    **El cliente NUNCA manda `null` para decir "déjalo
+                    igual".** Y el servidor tiene que poder distinguirlos: con
+                    un tipo nullable pelado los dos llegan iguales, y editar
+                    cantidades borraría el descuento sin que nadie lo pidiera.
+
+                    Lo encontró el agente del middleware al implementar,
+                    envolviéndolos en un tipo que distingue presencia de
+                    valor. Es la misma forma que `is_declared` y que el tercer
+                    estado del ámbar: **ausente no es un valor, y tratarlo
+                    como uno produce una decisión que nadie tomó.**
                 freight_amount:
                   type: number
                   format: double
                   nullable: true
-                  description: Flete. Ausente = se deja como está.
+                  description: >
+                    Flete. Mismas reglas que `invoice_discount_pct`: ausente
+                    lo deja como está, `null` lo quita, y nunca se manda
+                    `null` para decir "no lo toques".
       responses:
         '200':
           description: >
@@ -20747,6 +20860,21 @@ components:
         siguen viajando livianas — la premisa de v0.4.1 sigue valiendo para
         el pedido que nadie tocó, y no vale para el que sí. **El canal no se
         engorda para todos por un caso: se engorda para el caso.**
+
+        ⚠️⚠️ v0.95.0 — Y EL FILTRO DEL DELTA TIENE QUE MIRAR `last_edited_at`.
+        Este canal es incremental por `since`. Editar NO mueve la fecha de
+        decisión ni la de recepción, así que **sin agregar la marca de edición
+        al filtro, un pedido editado nunca vuelve a aparecer en el delta**: la
+        app seguiría mostrando lo viejo para siempre, sin nada en rojo.
+
+        Lo encontró el agente del middleware al implementar, y su frase es la
+        regla: **el campo nuevo habría estado perfectamente implementado y no
+        habría llegado nunca.**
+
+        Regla general que queda: **un campo que se agrega a un canal
+        incremental necesita su marca de tiempo en el filtro del canal, o está
+        implementado y es inalcanzable.** No falla, no avisa: simplemente no
+        llega.
       properties:
         client_uuid: { type: string, format: uuid }
         order_number: { type: string }
