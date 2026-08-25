@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.86.0
+  version: 0.87.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -223,6 +223,52 @@ info:
          hacia el mismo lado, invertir una comparación habría pasado en verde.
          Cualquier prueba sobre estos dos tiempos necesita las dos
          direcciones.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.87.0 — EL ENDPOINT ESCRIBÍA EL DERIVADO Y NO EL HECHO
+    ══════════════════════════════════════════════════════════════════════════
+
+    Corrige B1 antes de que nadie lo haya implementado contra dev. Ninguna
+    forma cambia: se corrigen DEFINICIONES, que en este caso es lo mismo que
+    corregir el comportamiento.
+
+    🔴 EL DEFECTO, QUE ERA MÍO Y DE v0.86.0
+      `POST /collect-without-bin` decía que su `quantity` era "la cantidad
+      TOTAL sin ubicar de este ítem". Esa definición no sobrevive al paso
+      siguiente:
+
+        1. el bodeguero registra 5 sin bin  → sin ubicar: 5
+        2. la oficina asigna esos 5         → sin ubicar: 0
+        3. la cola offline reintenta `5`    → ¿sin ubicar: 5?
+
+      En el paso 3 esas cinco unidades ya estaban ubicadas. O se deshacía la
+      asignación, o se contaban dos veces. **Asignar movía el denominador
+      debajo de la llave de idempotencia**, así que la idempotencia que el
+      contrato prometía solo valía hasta que alguien hiciera su trabajo.
+
+    ★ LA CAUSA: DOS HECHOS COLAPSADOS EN UN CAMPO
+      · Cuánto se recogió sin saber de dónde → HISTÓRICO. No cambia nunca.
+      · Cuánto de eso sigue sin ubicar       → DERIVADO. Baja al asignar.
+
+      Mientras el endpoint escribió el segundo, dos escritores tocaban el
+      mismo número por razones distintas. Ahora escribe el primero y el
+      segundo es una resta que cuadra por construcción.
+
+    ★ CÓMO SALIÓ, y vale más que el arreglo
+      No lo encontró una prueba. Salió de leer CÓMO el agente del Mac encoló
+      la acción: cola offline, tipo `COLLECT_NO_BIN`, reemplazo por
+      `item_code`, reenvío del total. Su cola está bien construida — hizo
+      exactamente lo que v0.86.0 pedía. Al seguir ese mensaje hasta su
+      reintento apareció el paso 3.
+
+      **Una decisión de implementación correcta, aplicada a un contrato mal
+      definido, produce el defecto sin que nadie se equivoque.** Por eso el
+      contrato se lee contra la implementación y no solo contra sí mismo.
+
+    ★ Y LA SUMA DE `assign-bins` SE MIDE CONTRA EL PENDIENTE
+      `SUM(allocations[].quantity)` iguala `unassigned_bin_quantity`, no el
+      total histórico. Con los dos números separados, esa frase por fin tiene
+      un solo significado posible.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.86.0 — B1: RECOGER SIN SABER DE DÓNDE CREA UNA OBLIGACIÓN,
@@ -8906,7 +8952,8 @@ paths:
         casos repartidos.
 
         ★ LA SUMA TIENE QUE DAR EXACTO. `SUM(allocations[].quantity)` debe
-        igualar la cantidad sin ubicar de ese ítem. Ni más ni menos → 400
+        igualar `unassigned_bin_quantity` de ese ítem —lo que sigue SIN
+        ubicar, no el total histórico recogido sin bin. Ni más ni menos → 400
         `quantity_mismatch`.
 
         No se acepta parcial a propósito. Un parcial dejaría el ítem con
@@ -8917,6 +8964,17 @@ paths:
         ★ ESTO NO MUEVE INVENTARIO NI CAMBIA CANTIDADES. Las unidades ya
         estaban recogidas y ya estaban comprometidas desde que se registraron
         sin bin. Lo único que cambia es que ahora se sabe de dónde salieron.
+
+        ★ v0.87.0 — Y TAMPOCO TOCA EL TOTAL RECOGIDO SIN BIN. Ese número es
+        histórico: dice cuántas unidades entraron al camión sin que nadie
+        supiera de dónde, y eso no deja de ser cierto porque después se
+        averigüe. Asignar mueve el otro término de la resta.
+
+        La consecuencia práctica es la que importa: un reintento de
+        `collect-without-bin` con el mismo total, llegado DESPUÉS de esta
+        asignación, no la deshace. Sin esa separación, una cola offline de la
+        app de bodega podía revertir el trabajo de la oficina sin que nadie
+        se enterara.
 
         ⚠️ NO VALIDA CONTRA EL STOCK DEL BIN, y es deliberado. El movimiento
         físico ya ocurrió: la mercancía está en el camión. Rechazar la
@@ -12041,9 +12099,35 @@ paths:
                   type: number
                   format: double
                   description: >
-                    Cuánto recogió sin poder decir de qué bin. Es la cantidad
-                    TOTAL sin ubicar de este ítem en este camión, no un
-                    incremento — la llamada es idempotente por `item_code`.
+                    ★ CORREGIDO EN v0.87.0 — LEE ESTO, LA DEFINICIÓN DE
+                    v0.86.0 ERA INCORRECTA.
+
+                    Es el **TOTAL ACUMULADO recogido sin bin** de este ítem en
+                    este camión. No un incremento, y **NO "lo que sigue sin
+                    ubicar"**.
+
+                    La llamada es idempotente por `item_code`: dos llamadas
+                    con `5` dejan cinco, no diez. Y reenviar el mismo total
+                    es un no-op **incluso después de que la oficina haya
+                    asignado los bins**.
+
+                    ⚠️ POR QUÉ SE CORRIGIÓ, porque la diferencia no es
+                    cosmética. v0.86.0 decía "la cantidad TOTAL sin ubicar", y
+                    esa definición no sobrevivía al paso siguiente:
+
+                      1. el bodeguero registra 5 sin bin  → sin ubicar: 5
+                      2. la oficina asigna esos 5         → sin ubicar: 0
+                      3. la cola offline reintenta `5`    → ¿sin ubicar: 5?
+
+                    En el paso 3 esas cinco unidades YA estaban ubicadas. O se
+                    deshacía la asignación, o se contaban dos veces. **Asignar
+                    movía el denominador debajo de la llave de idempotencia.**
+
+                    La causa fue colapsar DOS HECHOS DISTINTOS en un campo:
+                    cuánto se recogió sin saber de dónde (histórico, no cambia
+                    nunca) y cuánto de eso sigue sin ubicar (derivado, baja
+                    cuando la oficina asigna). Este campo escribe el primero.
+                    El segundo se calcula.
       responses:
         '200':
           description: Recolección sin bin registrada; devuelve el progreso del ítem
@@ -16584,6 +16668,19 @@ components:
             ★ NUEVO en v0.86.0 (B1). Cuántas de las `collected_quantity` se
             recogieron SIN BIN y todavía esperan que alguien diga de dónde
             salieron. Presente siempre; 0 es el caso normal.
+
+            ★ v0.87.0 — ES UN DERIVADO, NO UN ALMACENADO:
+
+                unassigned_bin_quantity
+                  = (total recogido sin bin)  −  (ya ubicado por la oficina)
+
+            Nadie lo escribe directamente. `collect-without-bin` escribe el
+            primer término y `assign-bins` mueve el segundo; este campo es la
+            resta y siempre cuadra por construcción.
+
+            Antes era un almacenado que dos endpoints tocaban, y eso hacía que
+            un reintento de la cola offline pudiera deshacer una asignación
+            —ver la nota en el cuerpo de `collect-without-bin`.
 
             ⚠️ ESTÁ CONTENIDA EN `collected_quantity`, NO SE SUMA APARTE. Una
             unidad recogida sin bin ESTÁ recogida: cuenta para
