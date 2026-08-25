@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.91.0
+  version: 0.92.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -223,6 +223,32 @@ info:
          hacia el mismo lado, invertir una comparación habría pasado en verde.
          Cualquier prueba sobre estos dos tiempos necesita las dos
          direcciones.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.92.0 — LA PROSA DE v0.91.0 NOMBRABA UNA RUTA QUE NO EXISTE
+    ══════════════════════════════════════════════════════════════════════════
+
+    Una línea de texto. Ninguna forma cambia.
+
+    🔴 EL DEFECTO
+      La nota de `OrderStatus` decía que la única vía para sacar una orden de
+      `APROBADA` es `PATCH /admin/orders/{client_uuid}`. **Esa ruta no
+      existe.** La operación vive en `PATCH /admin/orders/{client_uuid}/edit`,
+      junto a sus hermanas `/approve` y `/reject`.
+
+    ★ POR QUÉ SE CORRIGE EN VEZ DE ACLARARSE EN UN PROMPT
+      Porque ya sabemos cómo termina. Dos veces esta semana un consumidor
+      implementó lo que decía la prosa en vez de lo que decía la forma: el
+      changelog nombraba `DESECHADO` en castellano corriente y alguien
+      escribió `DISCARDED`; la advertencia sobre `origin_reason` vivía en un
+      párrafo y la pantalla se dibujó plana.
+
+      Un contrato cuya prosa nombra una ruta inexistente es una trampa
+      puesta, no un descuido. **La sección de rutas es la autoridad; cuando la
+      prosa la contradice, la prosa se arregla — no se explica aparte.**
+
+    ★ Y SE PUBLICA COMO VERSIÓN NUEVA, no moviendo el tag de v0.91.0. Mismo
+      criterio de siempre: un tag nombra un contenido y no se reescribe.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.91.0 — D6: `APROBADA` DEJA DE SER FINAL
@@ -16936,7 +16962,7 @@ components:
         cierto, y ese código no se anuncia — no hay un campo que se pueda
         buscar, hay una suposición repartida.
 
-        ★ LA ÚNICA VÍA es `PATCH /admin/orders/{client_uuid}`. Editar
+        ★ LA ÚNICA VÍA es `PATCH /admin/orders/{client_uuid}/edit`. Editar
         re-evalúa cupo y mora con los números de HOY, y si el pedido editado
         ya no pasa, vuelve a `RETENIDA_CARTERA` y necesita aprobarse otra vez.
         Ninguna otra operación puede sacar a una orden de `APROBADA`.
