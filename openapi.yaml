@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.92.0
+  version: 0.93.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -223,6 +223,53 @@ info:
          hacia el mismo lado, invertir una comparación habría pasado en verde.
          Cualquier prueba sobre estos dos tiempos necesita las dos
          direcciones.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.93.0 — D6 CONVIERTE UN `else` EN UNA MENTIRA
+    ══════════════════════════════════════════════════════════════════════════
+
+    Un valor de enum. Aditivo en el contrato — **y hay que leer la advertencia
+    sobre decodificadores cerrados antes de adoptarlo.**
+
+    🔴 EL CASO
+      `POST /admin/trucks/{truck_id}/route-export` devuelve las órdenes que
+      ignoró, con un motivo de dos valores: `not_found` y `already_on_truck`.
+
+      Desde D6, una orden seleccionada puede volver a `RETENIDA_CARTERA` entre
+      que se dibuja la pantalla y se manda el lote. Ese caso no tenía valor, y
+      con dos valores **el `else` ES el otro valor**: un consumidor escribe
+      `already_on_truck ? … : "no se encontró"` y le reporta al analista que un
+      pedido vivo, esperando aprobación, **ya no existe**. Lo manda a buscar
+      algo borrado.
+
+      Lo encontró el agente del Dashboard midiendo su propio código contra D6,
+      y lo nombró como la regla 6 aplicada a un `else`: **un conjunto derivado
+      por negación hereda entero el punto ciego del que niega.**
+
+    ★ `not_approved` — la orden dejó de estar aprobada.
+
+    ⚠️⚠️ Y LA ADVERTENCIA QUE VALE MÁS QUE EL VALOR
+      **Agregar un valor a un enum de RESPUESTA es aditivo para el contrato y
+      puede romper a un cliente cuyo decodificador no admita desconocidos.**
+
+      Es la tercera dirección del mismo silencio que este contrato lleva
+      persiguiendo toda la sesión:
+
+        · el servidor no manda un campo obligatorio  → el cliente lee `false`
+        · el servidor manda un campo que el cliente no conoce → se descarta
+        · el servidor manda un valor de enum nuevo   → el cliente revienta,
+          o peor, cae al primer caso de su `switch`
+
+      Regla: **todo enum de respuesta se decodifica con una rama para "valor
+      que no conozco", que se muestra tal cual** en vez de caer al primero, al
+      último, o a un `else` que afirma otra cosa.
+
+    ★ Y QUEDA UNA PREGUNTA ABIERTA, MARCADA EN EL DOCUMENTO
+      `POST /admin/trucks/{truck_id}/orders` no dice qué pasa con una orden no
+      aprobada dentro de un lote: ¿se rechaza el lote entero, o se monta el
+      resto y se informa cuál quedó fuera? Hoy no está especificado, y ya
+      sabemos que un detalle sin especificar lo decide quien implementa
+      primero, distinto en cada lugar. **Se resuelve antes de implementar D6.**
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.92.0 — LA PROSA DE v0.91.0 NOMBRABA UNA RUTA QUE NO EXISTE
@@ -11223,6 +11270,11 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  # ★ v0.93.0 — MONTAR UN LOTE CON UNA ORDEN QUE DEJÓ DE ESTAR APROBADA:
+  # ver POST /admin/trucks/{truck_id}/orders. Desde D6 una orden seleccionada
+  # puede volver a RETENIDA_CARTERA entre que se dibuja la pantalla y se manda
+  # el lote, y el contrato tiene que decir qué pasa con el lote entero.
+
   /admin/trucks/available-pickups:
     get:
       tags: [pickups]
@@ -11839,7 +11891,7 @@ paths:
                         order_uuid: { type: string, format: uuid }
                         reason:
                           type: string
-                          enum: [not_found, already_on_truck]
+                          enum: [not_found, already_on_truck, not_approved]
                           description: >
                             `not_found`: la orden no existe o el admin no
                             puede verla.
@@ -11847,6 +11899,35 @@ paths:
                             pantalla estaba abierta. NO es un error — es
                             información para que el admin decida si rehace la
                             selección o sigue.
+
+                            ★ NUEVO en v0.93.0 — `not_approved`: la orden dejó
+                            de estar `APROBADA` mientras la pantalla estaba
+                            abierta. Desde D6 eso puede pasar: editarla la
+                            devuelve a `RETENIDA_CARTERA`.
+
+                            ⚠️⚠️ SIN ESTE VALOR, ESE CASO SE REPORTABA COMO
+                            UNA MENTIRA. Un consumidor con dos valores escribe
+                            `if already_on_truck … else "no se encontró"` —
+                            porque con dos valores el `else` ES el otro valor.
+                            Una orden re-retenida le habría llegado al analista
+                            como "ya no existe", mandándolo a buscar un pedido
+                            borrado que está vivo y esperando aprobación.
+
+                            Lo encontró el agente del Dashboard midiendo su
+                            propio código contra D6, y es la regla 6 aplicada a
+                            un `else`: **un conjunto derivado por negación
+                            hereda entero el punto ciego del que niega.** Un
+                            enum de dos valores hace que el `else` parezca
+                            exhaustivo, y deja de serlo el día que se agrega el
+                            tercero.
+
+                            ⚠️ PARA QUIEN DECODIFIQUE A UN TIPO CERRADO: agregar
+                            un valor a un enum de RESPUESTA es aditivo para el
+                            contrato y puede romper a un cliente cuyo
+                            decodificador no admita valores desconocidos. Todo
+                            enum de respuesta se decodifica con una rama para
+                            "valor que no conozco", que se muestra tal cual en
+                            vez de caer al primero ni al último.
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
