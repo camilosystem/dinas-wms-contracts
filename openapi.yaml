@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.82.0
+  version: 0.83.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -223,6 +223,57 @@ info:
          hacia el mismo lado, invertir una comparación habría pasado en verde.
          Cualquier prueba sobre estos dos tiempos necesita las dos
          direcciones.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.83.0 — v0.82.0 ERA YAML VÁLIDO Y OpenAPI INVÁLIDO
+    ══════════════════════════════════════════════════════════════════════════
+
+    Una línea. El significado no cambia; lo que cambia es que el documento se
+    puede leer.
+
+    🔴 QUÉ ESTABA MAL
+      `ReturnedGoodsDisposalWrite.quantity` llevaba `exclusiveMinimum: 0`, que
+      es la forma de OpenAPI **3.1**. Este documento se declara **3.0.3**,
+      donde `exclusiveMinimum` es un BOOLEANO que modifica a `minimum`. Un
+      lector real —Microsoft.OpenApi.Readers— tira `FormatException: String
+      '0' was not recognized as a valid Boolean`, y **el documento entero deja
+      de parsearse**.
+
+      Siete tests del middleware en rojo, y ninguno era de su código: era el
+      contrato que no se podía abrir.
+
+    ⚠️⚠️ LO GRAVE NO ES EL ERROR, ES QUE LA GUARDA NO PODÍA VERLO
+      El validador del Arquitecto comprueba tres cosas: que el YAML parsee,
+      que no haya claves repetidas, que no haya `$ref` colgado. **Las tres
+      pasaron.** Ninguna mira si el documento cumple la especificación de
+      OpenAPI para la versión que él mismo declara.
+
+      O sea: la guarda medía el objeto equivocado. Un archivo puede ser YAML
+      perfecto y OpenAPI inválido, y este contrato lo fue durante una versión
+      entera — publicado, adoptado y desplegado.
+
+      Es la tercera vez en dos días que una guarda tranquiliza en vez de
+      avisar: la de cobertura del diff decía "ninguno mudo" con el 31% sin
+      mirar, la de atomicidad del middleware no distinguía una transacción de
+      dos, y ésta decía OK sobre un documento que no se puede abrir.
+
+    ★ EL ARREGLO ES ESTRUCTURAL Y NO ESTÁ EN EL CONTRATO
+      El validador ahora corre `openapi-spec-validator` contra el documento y
+      **falla si no cumple la versión declarada**. Verificado con control
+      positivo: sobre v0.82.0 tal como se publicó, da rojo. Y re-auditadas las
+      diez versiones anteriores con el control nuevo: las diez válidas, así
+      que esto nació acá y no venía arrastrado.
+
+      ⚠️ Y la guarda avisa si la biblioteca NO está instalada, en vez de
+      pasar en verde. Una validación que se saltea sola porque falta una
+      dependencia es peor que no tenerla: ocupa el lugar de una que funciona.
+
+    ★ POR QUÉ UNA VERSIÓN NUEVA Y NO MOVER EL TAG
+      Mover `v0.82.0` habría hecho que el mismo tag nombre dos contenidos
+      distintos. Todo el mecanismo de fijación de este proyecto —el submódulo
+      clavado a un tag, el hash que se verifica antes de adoptar— se apoya en
+      que un tag es inmutable. Arreglar un error rompiendo esa propiedad sale
+      más caro que el error.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.82.0 — D11 + D12: EL PRODUCTO QUE VUELVE, DEFINIDO DE UNA VEZ
@@ -16537,9 +16588,17 @@ components:
         quantity:
           type: number
           format: double
-          exclusiveMinimum: 0
+          minimum: 0
+          exclusiveMinimum: true
           description: >
-            Cuántas unidades. No puede exceder `pending_quantity` → 400.
+            Cuántas unidades, ESTRICTAMENTE MAYOR QUE CERO. No puede exceder
+            `pending_quantity` → 400.
+
+            ⚠️ v0.83.0 CORRIGE LA FORMA DE ESTA RESTRICCIÓN, no la restricción.
+            v0.82.0 la escribió como `exclusiveMinimum: 0`, que es sintaxis de
+            OpenAPI 3.1 — y este documento se declara 3.0.3, donde
+            `exclusiveMinimum` es un BOOLEANO que modifica a `minimum`. El
+            significado no cambia; lo que cambia es que ahora se puede leer.
 
             Se puede disponer en varias veces con destinos distintos: ocho al
             tacho y cuatro a marketing son dos llamadas sobre la misma
