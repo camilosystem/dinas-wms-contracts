@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.87.0
+  version: 0.89.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -223,6 +223,124 @@ info:
          hacia el mismo lado, invertir una comparación habría pasado en verde.
          Cualquier prueba sobre estos dos tiempos necesita las dos
          direcciones.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.89.0 — LA DEUDA SOLO SE VEÍA ESCRIBIENDO
+    ══════════════════════════════════════════════════════════════════════════
+
+    Dos campos nuevos en un schema de lectura, un 400 que se documenta, y una
+    descripción que había dejado de ser cierta. Todo aditivo.
+
+    🔴 EL HUECO
+      Hasta v0.88.0, `collected_without_bin_quantity` y
+      `unassigned_bin_quantity` vivían ÚNICAMENTE en `PickingItemProgress`,
+      que solo devuelven cuatro POST.
+
+      **La deuda de bins era visible solo como efecto de escribir, nunca de
+      leer.** Un bodeguero que recarga la app —o que vuelve al camión al día
+      siguiente— no tenía forma de ver qué ítems dejó sin ubicar desde su
+      propia pantalla. La única lista que los mostraba está en el Dashboard,
+      que él no usa.
+
+      Y la salida que quedaba era peor que el hueco: para consultar, escribir.
+      En una base compartida eso no es una molestia, es un efecto secundario.
+
+      Lo señaló el agente del middleware DOS VECES antes de que se corrigiera.
+      Tenía razón las dos.
+
+    ★ QUÉ CAMBIA
+      `PickingItem` —el ítem de `GET /picking/trucks/{truck_id}/collection`—
+      gana los dos números, con el mismo significado que ya tienen en
+      `PickingItemProgress`. La misma resta, ahora legible.
+
+    ★ Y `PickingItem.collected_quantity` DECÍA ALGO QUE DEJÓ DE SER CIERTO
+      Decía "suma de sus registros de bin". Desde B1 incluye también lo
+      recogido sin bin, porque una unidad sin ubicar ESTÁ recogida. Una
+      descripción que envejece sin que nada la marque es la misma forma que
+      produjo los tres defectos anteriores de este bloque.
+
+    ★ SE DOCUMENTA UN 400 QUE UNA IMPLEMENTACIÓN TUVO QUE INVENTAR
+      `total_below_assigned`: si el total que llega a `collect-without-bin` es
+      menor que lo que la oficina ya ubicó, el pendiente quedaría negativo y
+      la compuerta dejaría pasar el camión.
+
+      El agente del middleware lo detectó al implementar v0.87.0, eligió 400
+      en vez de truncar, y lo dijo — señalando que era decisión suya y no del
+      contrato. **Se adopta tal cual y se escribe aquí**, porque su razón es
+      mejor que la aritmética: los dos números vienen de PERSONAS DISTINTAS, y
+      corregir uno callado le borra el trabajo a la otra.
+
+      Una conducta correcta que vive solo en una implementación es un detalle
+      sin especificar esperando a que el segundo cliente lo decida distinto.
+
+    ★ CUARTA VUELTA SOBRE B1, Y LAS CUATRO FUERON DEL CONTRATO
+      v0.86.0 definió mal el campo · v0.87.0 lo corrigió y dejó al cliente sin
+      poder leerlo · v0.88.0 lo devolvió · v0.89.0 lo hace legible sin
+      escribir.
+
+      Ninguna llegó a producir un dato malo, y ninguna la encontró una prueba:
+      las cuatro salieron de leer CÓMO alguien tuvo que implementarlo. Una
+      cola offline, una migración local, y dos veces la misma observación de
+      un agente que la hizo antes de que se entendiera.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.88.0 — EL SERVIDOR PEDÍA UN ACUMULADO Y NO LO DEVOLVÍA
+    ══════════════════════════════════════════════════════════════════════════
+
+    Un campo nuevo. Aditivo. Cierra el hueco que abrió v0.87.0 al corregir el
+    de v0.86.0 — la tercera vuelta sobre el mismo bloque, y las tres veces el
+    defecto fue del contrato.
+
+    🔴 EL HUECO
+      v0.87.0 hizo al cliente AUTOR del total acumulado recogido sin bin, y no
+      le dio ninguna forma de LEERLO: el único número que el servidor
+      devolvía era el derivado. La app de bodega no tuvo más remedio que
+      guardar su propia copia del histórico.
+
+      Ahí el hecho pasó a vivir en dos lugares sin nada que los obligue a
+      coincidir:
+
+        1. registra 5 sin bin            local 5 · servidor 5
+        2. se limpia la caché de la app  local —
+        3. registra 3 más                local 3
+        4. la app manda `quantity: 3`
+        5. el servidor fija el histórico en 3
+
+      Dos unidades desaparecen de `collected_quantity`, el ítem deja de estar
+      completo, y **nada lo señala**: el servidor acepta el total que le
+      mandan porque el contrato dice que el cliente es quien lo sabe.
+
+    ★ QUÉ CAMBIA
+      `PickingItemProgress.collected_without_bin_quantity` — el histórico,
+      devuelto por el servidor. La copia local deja de ser fuente de verdad y
+      pasa a ser caché, con un original al que volver.
+
+      Y los dos términos de la resta viajan ahora, así que
+      `unassigned_bin_quantity` deja de ser una promesa y pasa a ser
+      comprobable contra lo que el servidor mismo devuelve.
+
+    ★ CÓMO SALIÓ — POR SEGUNDA VEZ SEGUIDA, Y NO FUE UNA PRUEBA
+      El defecto de v0.87.0 salió de leer CÓMO el agente del Mac encoló la
+      acción. Éste salió de leer CÓMO la implementó: una línea de su reporte
+      —"como el server no devuelve el histórico, lo guardo local"— dicha sin
+      darle importancia, porque desde donde él estaba era la única salida
+      posible y era correcta.
+
+      **Un contrato coherente consigo mismo puede seguir siendo imposible de
+      cumplir bien.** La coherencia se comprueba leyéndolo; la posibilidad,
+      solo leyéndolo contra lo que alguien tuvo que escribir para obedecerlo.
+
+    ⚠️ RIESGO RESIDUAL, ESCRITO PARA QUE NO SE DESCUBRA
+      Si un cliente pierde su caché MIENTRAS ESTÁ SIN SEÑAL y sigue
+      registrando, mandará un total calculado sobre cero. El único escritor
+      de un carril es su bodeguero, así que no hay carrera entre personas —
+      pero este campo no cubre la pérdida de caché sin red.
+
+      La salida, si alguna vez deja de ser teórico: hacer la llamada
+      INCREMENTAL con llave de idempotencia propia por registro, y entonces
+      el cliente no necesita saber ningún acumulado. No se hace ahora porque
+      cambiaría la forma de un endpoint que tres repos acaban de implementar,
+      a siete días de la demo.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.87.0 — EL ENDPOINT ESCRIBÍA EL DERIVADO Y NO EL HECHO
@@ -12128,13 +12246,42 @@ paths:
                     nunca) y cuánto de eso sigue sin ubicar (derivado, baja
                     cuando la oficina asigna). Este campo escribe el primero.
                     El segundo se calcula.
+
+                    ★ v0.88.0 — DE DÓNDE SACA EL CLIENTE ESTE NÚMERO:
+                    de `PickingItemProgress.collected_without_bin_quantity`,
+                    que el servidor devuelve. **No lo lleves solo en el
+                    dispositivo.** v0.87.0 pedía un acumulado sin devolverlo,
+                    y eso obligaba a cada cliente a guardar su propia copia
+                    del histórico — un hecho en dos lugares, sin nada que los
+                    obligue a coincidir. Guardarlo local está bien como
+                    CACHÉ; la fuente de verdad es la respuesta del servidor.
       responses:
         '200':
           description: Recolección sin bin registrada; devuelve el progreso del ítem
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PickingItemProgress' }
-        '400': { $ref: '#/components/responses/BadRequest' }
+        '400':
+          description: >
+            ★ v0.89.0 — `total_below_assigned` si el total que llega es MENOR
+            que lo que la oficina ya ubicó.
+
+            No se trunca ni se ajusta en silencio. Si la oficina ubicó 5 y
+            llega un total de 3, el pendiente quedaría en −2 y la compuerta
+            de facturación dejaría pasar el camión con unidades sin ubicar.
+
+            ⚠️ Y LA RAZÓN DE FONDO NO ES ARITMÉTICA: los dos números vienen
+            de PERSONAS DISTINTAS. Corregir uno callado le borra el trabajo a
+            la otra, y nadie se entera de que pasó. La decisión la tomó el
+            agente del middleware al implementar v0.87.0 y se adopta tal cual;
+            se escribe aquí para que deje de ser una conducta de una
+            implementación y pase a ser lo que el contrato promete.
+
+            Cualquier otro cuerpo malformado sigue devolviendo el error
+            genérico.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -16624,7 +16771,46 @@ components:
         collected_quantity:
           type: number
           format: double
-          description: Cuánto lleva recogido (suma de sus registros de bin).
+          description: >
+            Cuánto lleva recogido.
+
+            ⚠️ CORREGIDO EN v0.89.0: decía "suma de sus registros de bin", y
+            desde B1 (v0.86.0) eso dejó de ser cierto — **incluye también lo
+            recogido SIN bin**. Una unidad sin ubicar está recogida; lo único
+            que le falta es la ubicación.
+        collected_without_bin_quantity:
+          type: number
+          format: double
+          description: >
+            ★ NUEVO en v0.89.0 (B1). Cuánto de `collected_quantity` se recogió
+            SIN BIN. Histórico acumulado: no baja al asignar. Presente
+            siempre; 0 es el caso normal.
+
+            Mismo número que `PickingItemProgress.collected_without_bin_quantity`.
+        unassigned_bin_quantity:
+          type: number
+          format: double
+          description: >
+            ★ NUEVO en v0.89.0 (B1). Cuánto de lo recogido sin bin sigue
+            esperando ubicación. Derivado:
+            `collected_without_bin_quantity` menos lo ya ubicado por la
+            oficina. Presente siempre; 0 es el caso normal.
+
+            ⚠️⚠️ POR QUÉ ESTOS DOS CAMPOS TENÍAN QUE ESTAR TAMBIÉN AQUÍ.
+            Hasta v0.88.0 vivían ÚNICAMENTE en `PickingItemProgress`, que solo
+            devuelven cuatro POST: `collect`, `shortage`,
+            `collect-without-bin` y `assign-bins`.
+
+            O sea que la deuda de bins **solo era visible como efecto de
+            escribir, nunca de leer**. Un bodeguero que recarga la app, o que
+            vuelve al camión al día siguiente, no tenía forma de ver qué ítems
+            dejó sin ubicar desde su propia pantalla — la única lista que los
+            mostraba estaba en el Dashboard, que él no usa.
+
+            Lo señaló el agente del middleware dos veces antes de que se
+            corrigiera, y tenía razón las dos: **un dato que solo se obtiene
+            escribiendo obliga a escribir para consultarlo, y eso en una base
+            compartida no es una molestia, es un efecto secundario.**
         shortage_quantity:
           type: number
           format: double
@@ -16661,6 +16847,49 @@ components:
         collected_quantity: { type: number, format: double }
         shortage_quantity: { type: number, format: double }
         is_complete: { type: boolean }
+        collected_without_bin_quantity:
+          type: number
+          format: double
+          description: >
+            ★ NUEVO en v0.88.0 (B1). El TOTAL ACUMULADO recogido sin bin de
+            este ítem en este camión. Histórico: no baja nunca al asignar.
+            Presente siempre; 0 es el caso normal.
+
+            ⚠️⚠️ ES EL MISMO NÚMERO QUE `collect-without-bin` RECIBE, Y POR
+            ESO TIENE QUE VIAJAR DE VUELTA. v0.87.0 hizo al cliente autor de
+            un acumulado y no le dio forma de leerlo: el único número que el
+            servidor devolvía era el derivado. La app de bodega no tuvo más
+            remedio que guardar su propia copia del histórico, y ahí el hecho
+            pasó a vivir en dos lugares sin nada que los obligue a coincidir.
+
+            La secuencia que eso habilitaba:
+
+              1. registra 5 sin bin            local 5 · servidor 5
+              2. se limpia la caché de la app  local —
+              3. registra 3 más                local 3
+              4. la app manda `quantity: 3`
+              5. el servidor fija el histórico en 3
+
+            Dos unidades desaparecen de `collected_quantity`, el ítem deja de
+            estar completo, y NADA lo señala: el servidor acepta el total que
+            le mandan porque el contrato dice que el cliente es quien lo sabe.
+
+            ★ CON ESTE CAMPO, la copia local deja de ser fuente de verdad y
+            pasa a ser CACHÉ — con un original al que volver. Un cliente que
+            pierde su caché lee el histórico del servidor y vuelve a estar en
+            lo cierto.
+
+            ⚠️ RIESGO RESIDUAL, escrito para que no se descubra: si un
+            cliente pierde su caché MIENTRAS ESTÁ SIN SEÑAL y sigue
+            registrando, va a mandar un total calculado sobre cero. El único
+            escritor de un carril es su bodeguero, así que no hay carrera
+            entre personas — pero la pérdida de caché sin red no la cubre
+            este campo. Si alguna vez pasa de teórico a real, la salida es
+            hacer la llamada INCREMENTAL con llave de idempotencia propia por
+            registro, y entonces el cliente no necesita saber ningún
+            acumulado. No se hace ahora porque cambiaría la forma de un
+            endpoint que tres repos acaban de implementar.
+
         unassigned_bin_quantity:
           type: number
           format: double
@@ -16669,10 +16898,11 @@ components:
             recogieron SIN BIN y todavía esperan que alguien diga de dónde
             salieron. Presente siempre; 0 es el caso normal.
 
-            ★ v0.87.0 — ES UN DERIVADO, NO UN ALMACENADO:
+            ★ v0.87.0 — ES UN DERIVADO, NO UN ALMACENADO. Y desde v0.88.0
+            los dos términos de la resta viajan, así que se puede comprobar:
 
                 unassigned_bin_quantity
-                  = (total recogido sin bin)  −  (ya ubicado por la oficina)
+                  = collected_without_bin_quantity  −  (ya ubicado)
 
             Nadie lo escribe directamente. `collect-without-bin` escribe el
             primer término y `assign-bins` mueve el segundo; este campo es la
