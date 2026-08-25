@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.95.0
+  version: 0.96.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -223,6 +223,63 @@ info:
          hacia el mismo lado, invertir una comparación habría pasado en verde.
          Cualquier prueba sobre estos dos tiempos necesita las dos
          direcciones.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.96.0 — ASIGNAR SUMA, NUNCA PISA
+    ══════════════════════════════════════════════════════════════════════════
+
+    Solo texto. Ninguna forma cambia.
+
+    ★ EL CASO, MEDIDO EN DEV Y NO DISEÑADO POR NADIE
+      Un ítem recogido **8 de un bin y 4 sin bin**, y las 4 ubicadas después
+      en **ese mismo bin**. La fila del bin queda en 12.
+
+      Si `assign-bins` hubiera pisado la fila en vez de sumar, diría 4 — y
+      **ocho unidades recogidas habrían desaparecido sin que nada lo
+      señalara**: el total sigue en 12 por otro camino, y la compuerta solo
+      mira el pendiente. Un dato perdido que además deja todos los indicadores
+      en verde.
+
+      El agente del middleware lo hizo bien, y **nada en el contrato lo
+      obligaba**. Ahora sí.
+
+    ★ CÓMO APARECIÓ, y vale la pena porque no fue una prueba
+      Se le pidió al Mac recoger parte con bin y parte sin bin **del mismo
+      ítem**, para verificar que lo sin bin está CONTENIDO en el total y no se
+      suma aparte. Al asignar, el bin elegido fue el mismo del que ya había
+      salido la otra parte. **El montaje produjo una colisión que nadie había
+      pensado.**
+
+      Regla que deja: **un escenario de verificación armado con datos reales
+      encuentra casos que el diseño no enumeró**, porque la realidad no
+      respeta la separación de los casos de prueba.
+
+    ──────────────────────────────────────────────────────────────────────────
+    ★ MÉTODO — REGLA 11, Y LA APRENDIÓ QUIEN LA VENÍA ENSEÑANDO
+
+    ★ 11. CONOCER LA REGLA NO LA APLICA. HAY QUE BUSCAR ANTES DE ESCRIBIR.
+      Al implementar D6, el agente del middleware necesitó distinguir "campo
+      ausente" de "campo en null" y escribió un `Optional<T>`. El compilador
+      le avisó de una ambigüedad. Midiendo:
+
+        v0.35.0   NoteUpdate(bool Provided, string? Value)   Core.Trucks
+        v0.41.0   Optional<T>(bool HasValue, T? Value)       Core.Admin
+        v0.91.0   Optional<T>                                 el suyo, hoy
+
+      **Idéntico en forma, tres veces, por la misma razón, y ninguna sabía de
+      las otras.** Lo dijo él: *"la tercera la escribí yo sin buscar si ya
+      existía — exactamente lo que vengo diciendo que no hay que hacer. El
+      patrón me atrapó a mí con la regla en la mano."*
+
+      Lo unificó en tres archivos: **quita un duplicado en lugar de agregar el
+      tercero.** Y dejó `NoteUpdate` aparte con puntero cruzado, porque meter
+      esa refactorización dentro de D6 es como se pierden las dos.
+
+      ★ Y OTRA VEZ FUE EL COMPILADOR, NO UNA BÚSQUEDA. Tercera vez en esta
+      sesión que un tipo enumera lo que un grep no encuentra: los tres sitios
+      de proyección, los orígenes sin ámbito asignado, y ahora el duplicado.
+      **Un grep encuentra lo que se llama igual; un tipo encuentra lo que
+      significa lo mismo.**
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.95.0 — TRES HUECOS DE D6 QUE SOLO SE VEN IMPLEMENTÁNDOLO
@@ -9481,6 +9538,23 @@ paths:
         histórico: dice cuántas unidades entraron al camión sin que nadie
         supiera de dónde, y eso no deja de ser cierto porque después se
         averigüe. Asignar mueve el otro término de la resta.
+
+        ⚠️⚠️ v0.96.0 — ASIGNAR **SUMA** A LA FILA DEL BIN, NUNCA LA PISA.
+        Si ese ítem ya tiene una recolección registrada en ese mismo bin, la
+        asignación se ACUMULA sobre ella.
+
+        No es un detalle de implementación: pisarla haría desaparecer
+        unidades en silencio. Medido en dev con un caso real — un ítem
+        recogido 8 de un bin y 4 sin bin, y las 4 ubicadas después en **ese
+        mismo bin**: la fila queda en 12. Si la asignación hubiera pisado,
+        diría 4, y **ocho unidades recogidas se habrían perdido sin que nada
+        lo señalara** — ni el total, que sigue en 12 por otro camino, ni la
+        compuerta, que solo mira el pendiente.
+
+        El caso apareció por accidente al montar la verificación en vivo: se
+        pidió recoger parte con bin y parte sin bin **del mismo ítem** para
+        probar la contención, y la asignación cayó en el mismo bin. **Nadie lo
+        diseñó, y nada en el contrato lo impedía.**
 
         La consecuencia práctica es la que importa: un reintento de
         `collect-without-bin` con el mismo total, llegado DESPUÉS de esta
