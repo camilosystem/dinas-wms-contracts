@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.90.0
+  version: 0.91.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -223,6 +223,112 @@ info:
          hacia el mismo lado, invertir una comparación habría pasado en verde.
          Cualquier prueba sobre estos dos tiempos necesita las dos
          direcciones.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.91.0 — D6: `APROBADA` DEJA DE SER FINAL
+    ══════════════════════════════════════════════════════════════════════════
+
+    Una ruta nueva, siete campos nuevos, y **una transición de estados que
+    este contrato prohibía explícitamente desde v0.4.0**. Todo aditivo en la
+    forma; lo que cambia es lo que se puede suponer.
+
+    🔴 LO PRIMERO, PORQUE NO ES UN CAMPO
+      `APROBADA → RETENIDA_CARTERA` era una transición imposible. Ahora
+      existe, por una sola vía: editar.
+
+      Eso no se busca con un grep. Cualquier código escrito sobre "una orden
+      aprobada ya no se mueve" deja de ser cierto, y esa suposición no está
+      declarada en ninguna parte — está repartida entre las tres apps, el
+      Dashboard y el sincronizador. **Por eso D6 estaba clasificado de riesgo
+      máximo y por eso no comparte ola con D16.**
+
+    ★ QUÉ SE EDITA: cantidades, líneas agregadas o quitadas, descuento de
+      documento y flete.
+
+    ★ QUÉ NO: cliente ni vendedor. Un pedido que cambia de cliente no es el
+      mismo pedido corregido — es otro pedido con la historia del primero
+      colgando de un dueño que nunca lo pidió.
+
+    ★ SOLO SI NO ESTÁ MONTADA EN CAMIÓN, y eso cierra el caso difícil POR
+      CONSTRUCCIÓN: como el picking ocurre después de montar, una orden
+      editable nunca tiene picking en curso. No hay que decidir qué pasa con
+      las unidades ya recogidas, porque no puede haberlas.
+
+    ★ LAS LÍNEAS SE MANDAN COMPLETAS, NO POR DIFERENCIA
+      Un formato de altas/bajas/cambios tiene un estado intermedio por cada
+      operación y una forma de aplicarse a medias. Un reemplazo no.
+
+    ★ `expected_version` OBLIGATORIO — 409 `version_conflict`
+      Dos analistas editando el mismo pedido sin esto producen que el segundo
+      pise al primero **sin que ninguno se entere**, y el resultado se ve
+      idéntico a un pedido bien editado. Misma decisión que
+      `total_below_assigned`: cuando dos números vienen de personas distintas,
+      ninguna corrección callada es aceptable.
+
+    ★ `is_editable` LO DICE EL SERVIDOR, NO SE DEDUCE
+      Hoy la condición es `truck_id == null` y estado editable. **No la
+      reconstruyas.** El día que se agregue una condición, la deducción de
+      cada consumidor queda vieja en silencio y cada una distinta. Y con el
+      campo, la pantalla puede no ofrecer el botón en vez de ofrecer uno que
+      existe para que el servidor lo rechace.
+
+    ⚠️⚠️ EDITAR HACIA ABAJO TAMBIÉN PUEDE RETENER
+      La re-evaluación usa los números de HOY, no los del día en que se tomó
+      el pedido. El cliente pudo acumular mora desde entonces. Bajar una
+      cantidad no garantiza que siga aprobado, y la pantalla no puede
+      prometerlo — tiene que leer el estado de la respuesta.
+
+    ★ Y "LA APP YA LO TIENE" VUELVE A SER FALSO, POR SEGUNDA VEZ
+      `/sync/orders` es liviano desde v0.4.1 con el argumento de que la app ya
+      tiene las líneas desde que envió el pedido. **D6 hace que la oficina
+      pueda cambiarlas.** Sin corregirlo, la app mostraría las líneas viejas
+      con el total nuevo: un pedido que se contradice a sí mismo en la misma
+      pantalla, sin ninguna de las dos mitades marcada.
+
+      Una orden editada viaja con sus `lines`. Las demás siguen livianas —
+      **el canal no se engorda para todos por un caso: se engorda para el
+      caso.**
+
+      Es la segunda vez que esa frase resulta falsa (la primera fue
+      `total_amount` en v0.37.3). Una premisa que fue cierta al escribirse no
+      avisa cuando deja de serlo.
+
+    ──────────────────────────────────────────────────────────────────────────
+    ★ MÉTODO — TRES REGLAS MÁS, TODAS MEDIDAS ESTA SEMANA
+
+    ★ 6. "NO ESTÁ EN LA LISTA DE FALLOS" NO ES EVIDENCIA DE ÉXITO
+      Un conjunto derivado por NEGACIÓN hereda entero el punto ciego del
+      conjunto que niega. El instrumento del Dashboard calculaba "ya servidos"
+      como "no está en la lista de faltantes", y un campo cuya ruta nunca se
+      sondeó no está en ninguna lista: pidió marcar como obligatorio un campo
+      sobre cero evidencia, y el mismo informe se contradecía dos líneas más
+      arriba.
+
+      Lo más útil no es el caso: es que **quien lo cometió ya había arreglado
+      ese mismo punto ciego en la dirección de ida**, y se le coló de vuelta.
+      Arreglar un punto ciego en una dirección no lo arregla en la otra.
+
+    ★ 7. ANTICIPARLE A ALGUIEN LO QUE VA A ENCONTRAR LE CUESTA LO QUE NO
+         ESPERABA ENCONTRAR
+      El Arquitecto le había dicho al Dashboard que esperara ese rojo. Llegó,
+      y era falso. Su observación: *"si hubiera llegado a esa corrida
+      esperando ese rojo, la contradicción tenía muchas más chances de
+      pasarme por al lado. Lo que la delató fue leer el informe entero sin
+      saber qué buscaba."*
+
+      Es la misma forma que el sustantivo equivocado, un piso más arriba: el
+      encuadre de quien pide es un instrumento, y también puede estrechar el
+      campo. **Una predicción que se cumple no queda validada por cumplirse.**
+
+    ★ 8. EL ENUMERADOR DECLARA EL UNIVERSO; LA PANTALLA SOLO OBSERVA
+      Barridas las tres apps: la única que enumera los fallos DESDE LA TABLA
+      de la cola no tiene ni un hueco de visualización. Las dos que dependen
+      de que cada pantalla se acuerde tienen cuatro. Nada las obligaba a
+      coincidir, y por eso resolvieron lo mismo de tres formas distintas.
+
+      Corolario, medido en el peor de los cuatro: **un fallo que no se
+      persiste no lo puede mostrar ningún panel, porque el dato no existe.**
+      Mostrar es la segunda capa; la primera es guardar.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.90.0 — ARREGLÉ LA LECTURA DE UN CONSUMIDOR Y OLVIDÉ LA DEL
@@ -9822,6 +9928,138 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /admin/orders/{client_uuid}/edit:
+    patch:
+      tags: [orders-admin]
+      summary: Editar un pedido ya sincronizado (D6)
+      description: >
+        ★ NUEVO en v0.91.0 (D6). REQUIERE rol ADMIN o ANALISTA_COMERCIAL.
+
+        ★⚠️ ES LA ÚNICA OPERACIÓN QUE PUEDE SACAR A UNA ORDEN DE `APROBADA`.
+        Ver la nota de `OrderStatus`: esa transición se abre en esta versión
+        y llevaba cerrada desde v0.4.0.
+
+        ★ QUÉ SE PUEDE CAMBIAR
+        Cantidades, líneas agregadas o quitadas, descuento de documento y
+        flete.
+
+        ★ QUÉ NO, Y NO ES UNA OMISIÓN
+        **El cliente y el vendedor no se editan.** Un pedido que cambia de
+        cliente no es el mismo pedido corregido: es otro pedido con la
+        historia del primero —su cupo consumido, su decisión de cartera, su
+        rastro— colgando de un dueño que nunca lo pidió. Si hace falta, se
+        rechaza y se toma uno nuevo.
+
+        ★ SOLO SI NO ESTÁ MONTADA EN UN CAMIÓN. Aprobada sí; montada no.
+        409 `mounted_on_truck`.
+
+        Y eso cierra el caso difícil por construcción, no por cuidado: como
+        no se puede editar una montada, y el picking ocurre DESPUÉS de
+        montar, **una orden editable nunca tiene picking en curso**. No hay
+        que preguntarse qué pasa con las unidades ya recogidas, porque no
+        puede haberlas.
+
+        ★ LAS LÍNEAS SE MANDAN COMPLETAS, NO POR DIFERENCIA
+        El cuerpo trae el conjunto de líneas que el pedido debe tener al
+        terminar. Un formato de altas/bajas/cambios tiene un estado
+        intermedio por cada operación y una forma de aplicarse a medias; un
+        reemplazo completo no. Es la misma razón por la que un borrador
+        guarda un `OrderCreate` entero y no un parche.
+
+        ★ SE RE-EVALÚAN CUPO Y MORA, CON LOS NÚMEROS DE HOY
+        No con los del día en que se tomó el pedido. Si el resultado ya no
+        pasa, la orden vuelve a `RETENIDA_CARTERA` y necesita aprobarse otra
+        vez — incluso si estaba `APROBADA` hace un segundo.
+
+        ⚠️ Eso significa que **editar hacia abajo también puede retener**: el
+        cliente pudo haber acumulado mora desde que se tomó el pedido, y la
+        re-evaluación mira el presente. Bajar una cantidad no garantiza que
+        el pedido siga aprobado, y la pantalla no puede prometerlo.
+
+        ★ CONTROL DE CONCURRENCIA OBLIGATORIO
+        `expected_version` es obligatorio y tiene que coincidir con el
+        `version` actual del pedido → si no, **409 `version_conflict`** y no
+        se escribe nada.
+
+        No es ceremonia. Dos analistas editando el mismo pedido sin esto
+        producen que el segundo pise al primero **sin que ninguno se entere**,
+        y el resultado se ve exactamente igual que un pedido bien editado. Es
+        la misma decisión que `total_below_assigned`: los dos números vienen
+        de personas distintas y ninguna corrección callada es aceptable.
+
+        ★ LA NOTA ES OBLIGATORIA
+        Un pedido que cambia sin explicación llega al vendedor como un error
+        del sistema. `edit_note` viaja hasta su app.
+
+        ★ EL VENDEDOR SE ENTERA, Y CON EL DETALLE
+        Ver `GET /sync/orders`: una orden editada viaja con sus líneas
+        completas, no solo con su estado. Sin eso la app del vendedor
+        seguiría mostrando las líneas viejas para siempre, con total nuevo —
+        un pedido que se contradice a sí mismo en la misma pantalla.
+      parameters:
+        - name: client_uuid
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expected_version, edit_note, lines]
+              properties:
+                expected_version:
+                  type: integer
+                  description: >
+                    El `version` que traía el pedido cuando se abrió para
+                    editar. Distinto del actual → 409 `version_conflict`.
+                edit_note:
+                  type: string
+                  minLength: 1
+                  description: Por qué se edita. Viaja hasta la app del vendedor.
+                lines:
+                  type: array
+                  minItems: 1
+                  description: >
+                    El conjunto COMPLETO de líneas que el pedido debe tener al
+                    terminar. No es un delta.
+                  items: { $ref: '#/components/schemas/OrderLine' }
+                invoice_discount_pct:
+                  type: number
+                  format: double
+                  nullable: true
+                  description: Descuento de documento. Ausente = se deja como está.
+                freight_amount:
+                  type: number
+                  format: double
+                  nullable: true
+                  description: Flete. Ausente = se deja como está.
+      responses:
+        '200':
+          description: >
+            Pedido editado. Devuelve el detalle con el estado RESULTANTE — que
+            puede ser `RETENIDA_CARTERA` aunque estuviera `APROBADA` al
+            entrar. La pantalla tiene que leer el estado de esta respuesta y
+            no dar por hecho que sigue aprobado.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrderDetail' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >
+            `version_conflict` — alguien más editó el pedido mientras tanto.
+            `mounted_on_truck` — ya está en un camión.
+            `not_editable` — estado que no admite edición.
+
+            En los tres casos NO se escribe nada.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /admin/orders/{client_uuid}/approve:
     post:
       tags: [admin]
@@ -16686,8 +16924,30 @@ components:
         Transiciones válidas:
           SINCRONIZADA     → APROBADA | RETENIDA_CARTERA   (automático)
           RETENIDA_CARTERA → APROBADA | RECHAZADA          (acción del admin)
-          APROBADA         → (final por ahora)
+          APROBADA         → RETENIDA_CARTERA              ★ v0.91.0, SOLO al editar
+          APROBADA         → (final por cualquier otra vía)
           RECHAZADA        → (final)
+
+        ⚠️⚠️ v0.91.0 (D6) — `APROBADA` DEJA DE SER FINAL, Y ESTO NO ES UN
+        CAMPO NUEVO: ES ABRIR UN ESTADO QUE LLEVABA CERRADO DESDE v0.4.0.
+
+        Lo leen las tres apps, el Dashboard y el sincronizador. Cualquier
+        código escrito sobre "una orden aprobada ya no se mueve" deja de ser
+        cierto, y ese código no se anuncia — no hay un campo que se pueda
+        buscar, hay una suposición repartida.
+
+        ★ LA ÚNICA VÍA es `PATCH /admin/orders/{client_uuid}`. Editar
+        re-evalúa cupo y mora con los números de HOY, y si el pedido editado
+        ya no pasa, vuelve a `RETENIDA_CARTERA` y necesita aprobarse otra vez.
+        Ninguna otra operación puede sacar a una orden de `APROBADA`.
+
+        ★ POR QUÉ NO SE INVENTÓ UN ESTADO NUEVO tipo `EDITADA`: un estado
+        nuevo obliga a que los cinco consumidores lo entiendan antes de poder
+        seguir funcionando, y la mayoría no necesita distinguirlo — para el
+        picking y para el camión, una orden re-retenida es exactamente una
+        orden retenida. Quien SÍ necesita distinguirlo (el vendedor, la
+        oficina) tiene `last_edited_at` para eso. **Un estado nuevo rompe a
+        todos para informar a dos.**
 
     WeekDay:
       type: string
@@ -20240,6 +20500,20 @@ components:
         `OrderAccepted` nunca lo devolvió, así que la app nunca lo tuvo.
         Además el total puede cambiar después de creado el pedido, y este es
         el único canal por el que ese cambio llega al vendedor.
+
+        ⚠️⚠️ v0.91.0 (D6) — "LA APP YA LO TIENE" VUELVE A SER FALSO, Y AHORA
+        POR OTRA RAZÓN. Desde D6 la oficina puede CAMBIAR las líneas de un
+        pedido ya sincronizado. Lo que la app tiene guardado desde que lo
+        envió deja de ser lo que el pedido dice.
+
+        Sin corregirlo, la app del vendedor mostraría **las líneas viejas con
+        el total nuevo**: un pedido que se contradice a sí mismo en la misma
+        pantalla, y ninguna de las dos mitades marcada como sospechosa.
+
+        Por eso una orden EDITADA viaja con `lines` completas. Las demás
+        siguen viajando livianas — la premisa de v0.4.1 sigue valiendo para
+        el pedido que nadie tocó, y no vale para el que sí. **El canal no se
+        engorda para todos por un caso: se engorda para el caso.**
       properties:
         client_uuid: { type: string, format: uuid }
         order_number: { type: string }
@@ -20257,6 +20531,31 @@ components:
             SERVIDOR, ya con descuento de documento y flete. Si viene, la
             app lo MUESTRA tal cual y no lo recalcula; si viene nulo, cae a
             la suma de sus líneas. Nunca se mezclan las dos fuentes.
+        last_edited_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            ★ NUEVO en v0.91.0 (D6). Cuándo la oficina editó este pedido.
+            `null` = nunca, el caso normal.
+
+            Cuando NO es null, esta entrada trae `lines` y la app **reemplaza**
+            las suyas. No las mezcla ni las compara: las de la oficina son las
+            vigentes.
+        last_edit_note:
+          type: string
+          nullable: true
+          description: >
+            ★ NUEVO en v0.91.0 (D6). Por qué se editó, escrito por quien
+            editó. Se muestra al vendedor: un pedido que cambió sin
+            explicación se lee como un error del sistema.
+        lines:
+          type: array
+          nullable: true
+          description: >
+            ★ NUEVO en v0.91.0 (D6). Presente SOLO cuando el pedido fue
+            editado. `null` en todos los demás, que siguen siendo livianos.
+          items: { $ref: '#/components/schemas/OrderDetailLine' }
         invoice_discount_pct:
           type: number
           format: double
@@ -20526,6 +20825,73 @@ components:
           description: >
             Nombre legible de la zona de REPARTO (BNX3, BRK1…), congelado al
             recibir la orden.
+        version:
+          type: integer
+          description: >
+            ★ NUEVO en v0.91.0 (D6). Sube en cada edición. Se manda como
+            `expected_version` al editar; si no coincide, 409.
+
+            Sube SOLO al editar. Aprobar y rechazar no lo mueven: no cambian
+            lo que el pedido dice.
+        is_editable:
+          type: boolean
+          description: >
+            ★ NUEVO en v0.91.0 (D6). Si esta orden se puede editar AHORA.
+            Presente siempre.
+
+            ⚠️⚠️ LO DICE EL SERVIDOR, NO SE DEDUCE. Hoy la condición es
+            `truck_id == null` y estado en `APROBADA` o `RETENIDA_CARTERA`,
+            pero **NO la reconstruyas**: el día que se agregue una condición
+            —una orden ya facturada, un cierre de mes, un rol sin permiso— la
+            deducción de cada consumidor queda vieja en silencio y cada uno
+            distinto.
+
+            Es la misma razón por la que existe `origin_reason_scope`: un
+            derivado que cada cliente calcula por su cuenta es un hecho que
+            vive en cinco lugares.
+
+            ★ Y ES LO QUE IMPIDE UN BOTÓN QUE MIENTE. Un control de editar
+            que existe para que el servidor lo rechace con 409 es un control
+            que miente. Con este campo, la pantalla puede no ofrecerlo — y
+            decir por qué, con `not_editable_reason`.
+        not_editable_reason:
+          type: string
+          nullable: true
+          enum: [MONTADA_EN_CAMION, ESTADO_NO_EDITABLE, null]
+          description: >
+            ★ NUEVO en v0.91.0 (D6). Por qué no se puede editar. `null`
+            exactamente cuando `is_editable` es true.
+
+              MONTADA_EN_CAMION   ya está en un camión; sacarla primero.
+              ESTADO_NO_EDITABLE  RECHAZADA, o transitoria.
+
+            Se muestra en vez del botón, no además del botón.
+        last_edited_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            ★ NUEVO en v0.91.0 (D6). Cuándo la oficina editó este pedido por
+            última vez. `null` = nunca se editó, que es el caso normal.
+
+            ⚠️ NO ES `decided_at`. Decidir es aprobar o rechazar; editar es
+            cambiar lo que el pedido dice. Una orden puede editarse sin
+            volver a decidirse (si sigue pasando cupo y mora) y puede
+            decidirse sin editarse. Mezclarlos haría imposible contestar "¿me
+            cambiaron el pedido?" y "¿ya me lo aprobaron?" por separado.
+        last_edited_by:
+          type: string
+          nullable: true
+          description: >
+            ★ NUEVO en v0.91.0 (D6). La CUENTA que editó, no la persona —
+            mismo alcance y misma limitación que `decided_by`.
+        last_edit_note:
+          type: string
+          nullable: true
+          description: >
+            ★ NUEVO en v0.91.0 (D6). Lo que escribió quien editó. Obligatorio
+            al editar: una orden que cambia sin explicación llega al vendedor
+            como un error del sistema.
         truck_id:
           type: string
           format: uuid
