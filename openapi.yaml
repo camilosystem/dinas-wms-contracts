@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.93.0
+  version: 0.94.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -223,6 +223,72 @@ info:
          hacia el mismo lado, invertir una comparación habría pasado en verde.
          Cualquier prueba sobre estos dos tiempos necesita las dos
          direcciones.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.94.0 — CUATRO COSAS QUE SALIERON DE MEDIR, NO DE DISEÑAR
+    ══════════════════════════════════════════════════════════════════════════
+
+    Todo aditivo. Las cuatro salieron del agente del middleware midiendo su
+    propio código contra D6 antes de escribir una línea.
+
+    ★ 1. EL LOTE DE `POST /admin/trucks/{truck_id}/orders` ES ATÓMICO
+      Y lo era desde v0.5.0 — **lo abierto era la prosa, no el
+      comportamiento.** Yo pregunté qué debía hacer; la respuesta ya estaba en
+      el código y el contrato no la decía.
+
+      ⚠️ Y EL DEFECTO REAL NO ERA LA ATOMICIDAD, ERA LA PALABRA "ALGUNA". El
+      400 decía "alguna orden no existe, no está aprobada, o ya está
+      asignada". Con veinte órdenes, el admin no sabe cuál ni por qué. **Eso
+      es lo que vuelve insoportable un rechazo atómico — no el rechazo.**
+
+      Ahora el 400 enumera `order_uuid` + motivo por cada una que falló.
+
+    ★ 2. `controlled_sale_warnings` NO SOBREVIVE A UNA EDICIÓN
+      Se calculan al crear y se persisten. Editar para subir la cantidad de un
+      ítem de venta controlada dejaría el aviso viejo — o lo dejaría presente
+      después de bajarla. **`exceeds_controlled_sale` se deriva de esa lista,
+      así que mentiría igual.**
+
+      Se RECALCULAN al editar y reemplazan a los anteriores. Su descripción
+      deja de decir "foto del momento de la creación" y pasa a decir **foto de
+      la última vez que se escribieron las líneas** — que es lo que siempre
+      fueron; hasta D6, nacer era la única vez.
+
+      ⚠️ LO QUE ESTO CUESTA, dicho para que no se descubra: se pierden los
+      números con los que el VENDEDOR decidió. Si algún día hace falta auditar
+      eso, es un campo aparte y no un cambio a este. Hoy nadie lo pidió.
+
+    ★ 3. `LineNumber` SE REASIGNA DESDE EL PAYLOAD NUEVO, y es seguro
+      `LineNumber` define el `BaseLineNumber` de la factura en SAP y el
+      reparto entre líneas del mismo ítem. Renumerar sonaría peligroso — y no
+      lo es, **porque editable ⇒ nunca facturada**: no existe ningún documento
+      de SAP que apunte a esos números todavía.
+
+      Se escribe para que nadie intente preservarlos por precaución. Una
+      precaución sin causa se convierte en una restricción que nadie sabe
+      explicar.
+
+    ★ 4. LA CADENA DE v0.91.0 LLEGA MÁS LEJOS DE LO QUE YO LA ESCRIBÍ
+      Yo escribí que editable ⇒ sin camión ⇒ sin picking en curso. El agente
+      midió que los conjuntos "modificable" y "facturable" son **disjuntos**,
+      o sea que editable ⇒ **nunca facturada**. La construcción cubría SAP y
+      yo solo había reclamado el picking.
+
+      Pero encontró un borde que no pudo cerrar, y lo dijo en vez de
+      manejarlo: si alguna operación hiciera retroceder el estado de un carril
+      desde CERRADO, un camión ya facturado podría caer a un estado
+      modificable. No encontró esa operación, y un comentario afirma que
+      ALISTADO es terminal — **pero eso es una afirmación en prosa, no una
+      guarda.**
+
+      Por eso la edición exige además que no haya tarea `ORDER_INVOICE`, con
+      su `not_editable_reason` propio: `TIENE_TAREA_DE_FACTURA`. **Una
+      condición más en el mismo lugar que el 409, no una segunda compuerta.**
+
+    ★ Y LA RESPUESTA A LO QUE PREGUNTÉ EXPLÍCITAMENTE
+      `expected_doc_total` SÍ cubre el camino editado: no hay columna, se
+      recalcula desde las líneas cada vez que el sincronizador arma la tarea.
+      No queda con el valor de la creación. Medido, no deducido.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.93.0 — D6 CONVIERTE UN `else` EN UNA MENTIRA
@@ -11515,6 +11581,40 @@ paths:
         REQUIERE rol ADMIN.
         Solo si el camión está en BORRADOR o CONFIRMADO (no EN_PICKING → 409).
         Las órdenes deben estar APROBADAS y sin asignar a otro camión (si no → 400).
+
+        ★ v0.94.0 — EL LOTE ES ATÓMICO, Y AHORA ESTÁ ESCRITO. Si UNA sola
+        orden del lote falla cualquiera de los tres controles, **no se monta
+        ninguna**. Era el comportamiento desde v0.5.0 y el contrato no lo
+        decía; D6 obligó a mirarlo, porque desde entonces una orden
+        seleccionada puede volver a `RETENIDA_CARTERA` entre que se dibuja la
+        pantalla y se manda el lote.
+
+        ★ POR QUÉ ATÓMICO Y NO PARCIAL, con el argumento del agente que lo
+        implementó:
+
+          · El endpoint YA rechaza el lote entero por las otras dos causas.
+            Hacerlo parcial solo para "no aprobada" dejaría **un endpoint con
+            dos semánticas de fallo según cuál control falló**, y quien lo lea
+            en seis meses va a suponer la que le convenga.
+          · El camión es una RUTA FÍSICA. El admin miró una pantalla y decidió
+            qué órdenes viajan juntas; ese conjunto determina las paradas, los
+            pallets y la consolidación. Montar 7 de 8 no es "casi lo que
+            pidió": es otra decisión, tomada por el servidor.
+          · **El modo de fallo del parcial es silencioso.** El aviso de cuál
+            quedó fuera viajaría en un 200 que el admin puede no leer, y el
+            camión saldría con un hueco que se descubre en la entrega.
+          · El costo es asimétrico: rechazar cuesta recargar. Parcial cuesta
+            un camión que salió sin una orden que el admin creía cargada.
+
+        ⚠️⚠️ PERO EL DEFECTO REAL NO ERA LA ATOMICIDAD, ERA "ALGUNA"
+        El 400 decía *"Alguna orden no existe, no está APROBADA, o ya está
+        asignada a otro camión"*. Con veinte órdenes en el lote, el admin no
+        sabe **cuál** ni **por qué**. Eso es lo que vuelve insoportable el
+        rechazo atómico — no el rechazo.
+
+        Desde v0.94.0 el 400 **enumera**: por cada orden que falló, su
+        `order_uuid` y su motivo. Con eso el admin recarga sabiendo qué pasó,
+        y `not_approved` se vuelve accionable en vez de un misterio.
       parameters:
         - name: truck_id
           in: path
@@ -11538,7 +11638,33 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/TruckDetail' }
-        '400': { $ref: '#/components/responses/BadRequest' }
+        '400':
+          description: >
+            ★ v0.94.0 — `invalid_orders`. NO se montó ninguna. `details`
+            enumera cuáles fallaron y por qué.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Error'
+                  - type: object
+                    properties:
+                      details:
+                        type: array
+                        description: Una entrada por cada orden que falló. Nunca vacío en este 400.
+                        items:
+                          type: object
+                          properties:
+                            order_uuid: { type: string, format: uuid }
+                            reason:
+                              type: string
+                              enum: [not_found, not_approved, already_on_truck]
+                              description: >
+                                `not_found` no existe o el admin no puede verla ·
+                                `not_approved` no está APROBADA — desde D6 puede
+                                haber vuelto a RETENIDA_CARTERA mientras la
+                                pantalla estaba abierta ·
+                                `already_on_truck` ya está en otro camión.
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
@@ -20964,15 +21090,36 @@ components:
         not_editable_reason:
           type: string
           nullable: true
-          enum: [MONTADA_EN_CAMION, ESTADO_NO_EDITABLE, null]
+          enum: [MONTADA_EN_CAMION, ESTADO_NO_EDITABLE, TIENE_TAREA_DE_FACTURA, null]
           description: >
             ★ NUEVO en v0.91.0 (D6). Por qué no se puede editar. `null`
             exactamente cuando `is_editable` es true.
 
-              MONTADA_EN_CAMION   ya está en un camión; sacarla primero.
-              ESTADO_NO_EDITABLE  RECHAZADA, o transitoria.
+              MONTADA_EN_CAMION       ya está en un camión; sacarla primero.
+              ESTADO_NO_EDITABLE      RECHAZADA, o transitoria.
+              TIENE_TAREA_DE_FACTURA  ★ v0.94.0 — ya se encoló su factura.
 
             Se muestra en vez del botón, no además del botón.
+
+            ⚠️ POR QUÉ SE AGREGÓ EL TERCERO, y es la mejor razón de esta
+            versión. El agente del middleware midió la cadena de v0.91.0 y
+            llegó MÁS LEJOS de lo que yo la había escrito: editable ⇒ sin
+            camión ⇒ **nunca facturada**. Los dos conjuntos son disjuntos, así
+            que la construcción cubría SAP y no solo el picking.
+
+            Pero encontró un borde que no pudo cerrar: `TruckAggregateStatus`
+            puede devolver ASIGNADO y CONFIRMADO, que SÍ admiten modificar. Si
+            alguna operación hiciera retroceder el estado de un carril desde
+            CERRADO, un camión ya facturado podría caer a un estado
+            modificable, permitir desmontar la orden, y dejarla editable **con
+            tarea de factura encolada**. No encontró esa operación, y un
+            comentario afirma que ALISTADO es terminal —
+
+            **pero eso es una afirmación en prosa, no una guarda.** Esta
+            sesión entera se trata de esa diferencia. Así que la edición exige
+            además que no haya tarea `ORDER_INVOICE`: una condición más en el
+            MISMO lugar que el 409, no una segunda compuerta que alguien
+            pueda olvidar.
         last_edited_at:
           type: string
           format: date-time
@@ -21022,9 +21169,21 @@ components:
                 cuyo tope superó el vendedor al tomar este pedido. Vacío si
                 no hubo ninguno.
 
-                Es una FOTO del momento de la creación, guardada — no se
-                recalcula al leer. Por eso trae los números con los que se
-                decidió y no los de hoy.
+                ★ CORREGIDO EN v0.94.0 — es una FOTO DE LA ÚLTIMA VEZ QUE SE
+                ESCRIBIERON LAS LÍNEAS, guardada; no se recalcula al leer.
+                Hasta D6, nacer era la única vez que se escribían, y por eso
+                decía "del momento de la creación".
+
+                ⚠️ EDITAR LAS RECALCULA Y REEMPLAZA. Sin eso, subir la
+                cantidad de un ítem de venta controlada dejaría el aviso
+                viejo, y bajarla lo dejaría presente sin causa — y
+                `exceeds_controlled_sale`, que se deriva de que esta lista
+                tenga algo, mentiría igual.
+
+                ⚠️ LO QUE CUESTA, dicho para que no se descubra: se pierden
+                los números con los que el VENDEDOR decidió al tomar el
+                pedido. Si algún día hace falta auditar eso, es un campo
+                aparte — no un cambio a éste.
               items:
                 type: object
                 properties:
