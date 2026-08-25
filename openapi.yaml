@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.89.0
+  version: 0.90.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -225,6 +225,58 @@ info:
          direcciones.
 
     ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.90.0 — ARREGLÉ LA LECTURA DE UN CONSUMIDOR Y OLVIDÉ LA DEL
+    OTRO
+    ══════════════════════════════════════════════════════════════════════════
+
+    Un campo nuevo y una nota sobre una versión que se nombró y nunca existió.
+    Todo aditivo.
+
+    ★ `TruckInvoiceReadiness.unassigned_bins[].collected_without_bin_quantity`
+      El histórico, en la superficie de la OFICINA. Con él, la sección
+      "Picking sin BIN" puede decir "12 recogidas sin bin · 8 ya ubicadas ·
+      4 pendientes" en vez de un "4 pendientes" suelto que no explica nada.
+
+    🔴 POR QUÉ FALTABA
+      v0.89.0 puso los dos términos de la resta en `PickingItem` —la lectura
+      del BODEGUERO, filtrada por su carril— y en `PickingItemProgress`, que
+      solo devuelven POST. El Dashboard no llama al primero ni debe.
+
+      Arreglé la superficie de lectura de un consumidor y olvidé la del otro.
+      **Es la misma clase de error que "esta versión no te toca": una
+      afirmación sobre QUIÉN LLAMA disfrazada de afirmación sobre qué
+      cambió.** Ya costó una vez, en v0.63.0, y se supone que por eso existe
+      el mapa de consumidores.
+
+    ★ Y EL AGENTE DEL DASHBOARD SE NEGÓ A LA SALIDA FÁCIL
+      Podía sacar el histórico de la respuesta de un POST. No lo hizo, y lo
+      dijo con la razón exacta: *"eso es exactamente la forma que v0.89.0 vino
+      a corregir, un piso más arriba"*. Construyó lo que se podía, dejó el
+      hueco dicho, y lo escaló. Sin eso, la pantalla habría funcionado y la
+      deuda de diseño habría quedado enterrada bajo algo que anda.
+
+    ★ NOTA SOBRE v0.88.0 — SE NOMBRÓ Y NUNCA SE PUBLICÓ
+      No existe el tag y no se va a crear; su contenido viaja dentro de
+      v0.89.0. Ver la nota al pie de su bloque de changelog.
+
+      La regla que deja: **un número de versión nombrado en el changelog que
+      no tiene tag es una referencia que no se puede verificar**, y eso es lo
+      único que sostiene la fijación por submódulo. Lo midieron dos agentes
+      por separado, el mismo día, sin coordinarse.
+
+    ★ MÉTODO — LA COHERENCIA ENTRE DOS SUPERFICIES SE RESUELVE CON UN OBJETO,
+      NO CON DISCIPLINA
+      Al implementar v0.89.0 el middleware hizo que las dos superficies pidan
+      un solo objeto con los TRES números juntos, en vez de que cada una
+      arme los suyos: *"no es que las dos acierten: es que ninguna puede tomar
+      dos números y calcularse el tercero"*.
+
+      Y su test de coherencia usa los tres valores DISTINTOS entre sí a
+      propósito —10, 8 y 3— **porque con dos iguales, confundirlos pasaría en
+      verde.** Un caso de prueba con valores que coinciden no distingue las
+      implementaciones que los confunden.
+
+    ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.89.0 — LA DEUDA SOLO SE VEÍA ESCRIBIENDO
     ══════════════════════════════════════════════════════════════════════════
 
@@ -286,6 +338,33 @@ info:
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.88.0 — EL SERVIDOR PEDÍA UN ACUMULADO Y NO LO DEVOLVÍA
     ══════════════════════════════════════════════════════════════════════════
+
+    🔴🔴 ESTA VERSIÓN NUNCA SE PUBLICÓ COMO TAG. NO EXISTE `v0.88.0` EN EL
+    REPOSITORIO, y no se va a crear.
+
+      Entre `v0.87.0` y `v0.89.0` hay un solo commit. El contenido descrito
+      abajo NO se perdió —viaja entero dentro de `v0.89.0`— pero **el número
+      v0.88.0 no se puede fijar ni verificar por hash**, que es justo la
+      propiedad sobre la que descansa todo el mecanismo de fijación por
+      submódulo.
+
+      No se crea el tag retroactivamente. Un tag hecho después, sobre un
+      commit que nunca contuvo exactamente ese estado, sería un nombre que
+      miente — y todo esto funciona porque los tags no mienten. Mismo criterio
+      que con v0.82.0: se publica una versión nueva, nunca se mueve ni se
+      inventa una vieja.
+
+      ★ CÓMO SE ENCONTRÓ, y es la parte que importa: lo midieron DOS agentes
+      por separado, el mismo día, sin coordinarse — `git tag -l` no la trae, y
+      entre v0.87.0 y v0.89.0 hay un único commit. Ninguno de los dos lo dio
+      por bueno porque el changelog lo nombrara.
+
+      ★ REGLA QUE QUEDA: **un número de versión nombrado en el changelog que
+      no tiene tag es una referencia que no se puede verificar.** Toda versión
+      que este documento nombre existe como tag, o dice aquí mismo que no
+      existe. El error fue del Arquitecto: dar por publicado un número sin
+      confirmar que el tag estuviera.
+
 
     Un campo nuevo. Aditivo. Cierra el hueco que abrió v0.87.0 al corregir el
     de v0.86.0 — la tercera vuelta sobre el mismo bloque, y las tres veces el
@@ -15325,7 +15404,35 @@ components:
               quantity:
                 type: number
                 format: double
-                description: Cuántas unidades de este ítem esperan ubicación.
+                description: >
+                  Cuántas unidades de este ítem **esperan ubicación**. Es el
+                  PENDIENTE, no el histórico — es contra este número que
+                  `assign-bins` mide su suma.
+              collected_without_bin_quantity:
+                type: number
+                format: double
+                description: >
+                  ★ NUEVO en v0.90.0 (B1). El TOTAL ACUMULADO recogido sin bin
+                  de este ítem. Histórico: no baja al asignar.
+
+                  ⚠️ EXISTE PARA QUE LA OFICINA PUEDA EXPLICAR LA RESTA. Con
+                  un solo término, la sección "Picking sin BIN" solo puede
+                  decir "4 pendientes" — un número suelto que no dice de dónde
+                  sale. Con los dos: "12 recogidas sin bin · 8 ya ubicadas ·
+                  4 pendientes", y `ya ubicadas` se calcula como
+                  `collected_without_bin_quantity − quantity`.
+
+                  ⚠️⚠️ POR QUÉ FALTABA. v0.89.0 puso los dos términos en
+                  `PickingItem` —la lectura DEL BODEGUERO, filtrada por su
+                  carril— y en `PickingItemProgress`, que solo devuelven POST.
+                  El Dashboard no llama al primero ni debe, y sacar el número
+                  de una respuesta de escritura es exactamente la forma que
+                  v0.89.0 vino a corregir, un piso más arriba.
+
+                  Arreglé la superficie de lectura de un consumidor y olvidé
+                  la del otro. Es la misma clase de error que "esta versión no
+                  te toca": una afirmación sobre QUIÉN LLAMA disfrazada de
+                  afirmación sobre qué cambió.
               collected_at:
                 type: string
                 format: date-time
