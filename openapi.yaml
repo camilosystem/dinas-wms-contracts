@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.99.4
+  version: 0.99.5
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -223,6 +223,71 @@ info:
          hacia el mismo lado, invertir una comparación habría pasado en verde.
          Cualquier prueba sobre estos dos tiempos necesita las dos
          direcciones.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.99.5 — LOS TRES NIVELES DE UN COMENTARIO, Y D6 CERRADO
+    ══════════════════════════════════════════════════════════════════════════
+
+    Solo texto. Ninguna forma cambia. **Última versión antes del
+    congelamiento.**
+
+    ★ D6 VERIFICADO CONTRA DEV, LAS DOS DIRECCIONES
+        bloque roto (beneficio sin condición) → 400 invalid_promotion
+        descuento de documento 500%           → 400 invalid_edit
+        flete negativo                        → 400 invalid_edit
+        descuento de línea 500%               → 400 invalid_edit
+        bloque íntegro                        → 200 APROBADA
+
+      La segunda mitad es la que impide que el arreglo haya cerrado la puerta
+      con ladrillos, y se verificó dos veces: el bloque íntegro pasó, y la
+      restauración del pedido —una edición normal— también.
+
+    ★ Y EL MENSAJE DEL 400 NOMBRA EL ÍTEM Y LA PROMOCIÓN
+      *"Falta la línea de condición 'FC-COJIN-02' del bloque de la promoción
+      '0e1e0076-…'"*. Eso es accionable. Un código de error dice qué regla se
+      rompió; este dice qué falta.
+
+    ──────────────────────────────────────────────────────────────────────────
+    ★ 17. LOS TRES NIVELES DE UN COMENTARIO, Y EL TERCERO ES EL PEOR
+
+      Los tres aparecieron en esta sesión, medidos:
+
+      1. **EQUIVOCADO.** Tres comentarios del Dashboard decían que el servidor
+         rechaza un bloque roto. Era falso. *"Un comentario equivocado no
+         falla; solo convence"* — y el próximo que lo lea tiene un argumento
+         escrito para borrar la guarda por redundante.
+
+      2. **CORRECTO QUE ENVEJECIÓ.** `PickingItem.collected_quantity` decía
+         "suma de sus registros de bin". Fue cierto hasta que B1 agregó lo
+         recogido sin bin. Nada marca un comentario cuando el mundo se mueve
+         debajo.
+
+      3. **EXACTO, LEÍDO COMO UNA ELECCIÓN QUE NADIE HIZO.** *"Solo para
+         pedidos nuevos"*, sobre el validador de promociones. Describía con
+         precisión lo que la firma `CreateOrderRequest` ya imponía — no era
+         una decisión, era su consecuencia, escrita después.
+
+      **El tercero es el peor porque es VERDADERO.** Leerlo como una intención
+      lo hace parecer deliberado, y por tanto seguro de dejar. Los dos
+      primeros se pueden refutar midiendo; el tercero se confirma midiendo y
+      sigue engañando.
+
+      Regla práctica: **cuando escribas un comentario que describe una
+      limitación, di si es una decisión o una consecuencia.** "Solo para
+      pedidos nuevos porque así lo decidimos" y "solo para pedidos nuevos
+      porque su firma no acepta otra cosa" son dos frases que llevan al
+      lector a lugares opuestos.
+
+    ★ NOTA DE MÉTODO — CÓMO SE DISEÑÓ LA SONDA
+      Se eligió un pedido cuyo vendedor es dueño de la promoción usada, **para
+      aislar la indivisibilidad**: con una promoción ajena, el 400 podría venir
+      de cualquiera de las cinco validaciones y el resultado no diría nada. Es
+      afirmar la premisa, aplicado a una sonda.
+
+      Y las sondas se ordenaron por su capacidad de destruir: **las cuatro que
+      esperaban 400 primero, porque un 400 no escribe nada.** Estado capturado
+      antes, restaurado al final, y lo que no se puede deshacer —`version` es
+      monótono, `last_edited_*` queda marcado— dicho en vez de escondido.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.99.4 — LA FIRMA ERA LA CAUSA, NO EL SÍNTOMA
