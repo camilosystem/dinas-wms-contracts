@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.99.3
+  version: 0.99.4
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -223,6 +223,81 @@ info:
          hacia el mismo lado, invertir una comparación habría pasado en verde.
          Cualquier prueba sobre estos dos tiempos necesita las dos
          direcciones.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.99.4 — LA FIRMA ERA LA CAUSA, NO EL SÍNTOMA
+    ══════════════════════════════════════════════════════════════════════════
+
+    Solo texto. Ninguna forma cambia. La enumeración que pidió v0.99.3 dio su
+    resultado, y fue peor y más útil de lo esperado.
+
+    ★ CINCO HUECOS, NO UNO
+      Enumerado desde el camino de creación entero —validador de forma,
+      tubería, servicio, repositorio— y no desde lo que alguien había notado.
+      Veintidós cosas que hace crear; cinco no las hacía editar:
+
+        · `invoice_discount_pct` 0–100      → total −200
+        · `freight_amount` ≥ 0             → total −50
+        · `line_discount_pct` 0–100        → total −200
+        · bloques de promoción (5 reglas)  → mercancía gratis
+        · encolado hacia SAP               → ver abajo, sin resolver
+
+      **Cuatro producían dinero negativo con el pedido APROBADA.** Y un total
+      negativo o cero apaga la compuerta de cartera por completo:
+      `balance + total > límite` no se cumple nunca.
+
+      Buscando "la validación que falta" se habría arreglado una y desplegado
+      con cuatro. **La enumeración no es una formalidad: es la diferencia
+      entre el hueco que se vio y los que hay.**
+
+    ★★ Y LA CAUSA NO ERA UN OLVIDO — ERA UNA FIRMA
+      *"`ValidatePromotionGroupsAsync` pasó a tomar (líneas, vendedor) en vez
+      de `CreateOrderRequest`: esa firma no era una decisión, era la razón por
+      la que editar no la llamaba."*
+
+      ★ REGLA 16 — **UNA FUNCIÓN QUE SOLO ACEPTA EL TIPO DE UNA PUERTA SOLO SE
+      PUEDE USAR DESDE ESA PUERTA.**
+
+      Nadie decidió que esa validación fuera solo para crear. **Lo decidió una
+      firma**, y el comentario que decía "solo para pedidos nuevos" no era la
+      regla: era la consecuencia, escrita después, describiendo lo que el tipo
+      ya había impuesto.
+
+      Es la regla 14 en su forma más pura —lo que sostenía el comportamiento
+      no era la línea que se miraba— con un agravante: **aquí lo que lo
+      sostenía era invisible por diseño.** Un tipo no se lee como una
+      restricción; se lee como una firma.
+
+      Corolario práctico: una validación se escribe contra **los datos**, no
+      contra el DTO de quien la llama. El DTO es de una puerta; los datos son
+      de la entidad.
+
+    ★ Y LAS REGLAS NUMÉRICAS SE MOVIERON A UN SOLO LUGAR QUE LLAMAN LAS DOS
+      No una lista repetida en la puerta nueva: la misma definición, y se
+      cambió TAMBIÉN la creación para que la use. Dejar dos definiciones
+      "iguales" es dejar una que alguien va a completar mal, y se ve igual de
+      completa.
+
+    ⚠️ LO QUE QUEDA SIN RESOLVER, Y ESTÁ DICHO EN VEZ DE OLVIDADO
+      Crear encola una entrada para el escritor hacia SAP; editar no. Hoy
+      **nada lee esa cola** — su propio comentario lo dice.
+
+      NO se agrega el encolado al editar, y la razón vale como regla: **un
+      cambio cuyo efecto nadie observa no se puede verificar.** No es que sea
+      inofensivo: es que no hay forma de saber si rompió algo, y un cambio no
+      verificable no entra antes de un congelamiento.
+
+      Pero la asimetría **ya es incorrecta en principio**: una entrada que se
+      crea al crear y no al editar codifica *"el pedido no cambia después de
+      creado"*, que es exactamente lo que D6 volvió falso. Queda para después
+      del 2 de septiembre, y quien construya ese worker tiene que encontrar
+      esta advertencia antes que el silencio.
+
+    ★ UNA DECISIÓN DEL AGENTE QUE SE ADOPTA
+      La promoción se valida contra el vendedor **dueño del pedido**, no
+      contra quien edita. El analista que corrige no tiene por qué estar en la
+      lista de la promoción — es la regla 👤 otra vez: a quién pertenece un
+      documento lo dice el documento, no el token de quien lo toca.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.99.3 — UNA SEGUNDA PUERTA A UNA CASA CON LAS CERRADURAS EN
