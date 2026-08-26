@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.99.2
+  version: 0.99.3
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -223,6 +223,63 @@ info:
          hacia el mismo lado, invertir una comparación habría pasado en verde.
          Cualquier prueba sobre estos dos tiempos necesita las dos
          direcciones.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.99.3 — UNA SEGUNDA PUERTA A UNA CASA CON LAS CERRADURAS EN
+    LA PRIMERA
+    ══════════════════════════════════════════════════════════════════════════
+
+    Solo texto. Ninguna forma cambia. **Y es la corrección más importante de
+    D6**, porque el contrato nunca dijo lo que ahora dice y por eso el hueco
+    era posible.
+
+    🔴 MEDIDO CON UNA SONDA REAL, NO DEDUCIDO
+      El camino de edición esquivaba **cuatro** validaciones de promoción — que
+      la promoción exista, que esté activa, que esté vigente hoy, y que sea de
+      ese vendedor — más la indivisibilidad del bloque. El validador se llamaba
+      únicamente desde la creación, y su propio comentario lo decía: *"solo
+      para pedidos nuevos"*.
+
+          se quita la línea de CONDICIÓN, se deja la de BENEFICIO
+          → 200 OK · APROBADA · total 0.00 · mercancía gratis
+
+      Toca dinero y es silencioso: pasa cartera porque un total de 0 nunca
+      excede cupo, y llega a facturación como cualquier otro pedido.
+
+    🔴🔴 Y LO PEOR ES LO QUE ESTE DOCUMENTO HABÍA HECHO CON ESO
+      El Arquitecto le dijo al Dashboard que el servidor rechazaría un bloque
+      roto. **Era falso.** Con eso creó exactamente el anti-patrón que este
+      contrato nombra desde v0.85.0: **un control de pantalla que existe
+      porque el servidor rechaza, cuando el servidor no rechaza.**
+
+      Lo devolvió el agente del middleware con esas palabras, y es la crítica
+      correcta. **Una regla escrita en un contrato no protege de aplicarla al
+      revés cuando no se midió el supuesto.**
+
+    ★ LA REGLA, Y NO ES SOBRE PROMOCIONES
+      Es la TERCERA vez que la misma forma aparece en este bloque:
+      `controlled_sale_warnings` se contaba a sí mismo al editar; el evaluador
+      de cupo era correcto al crear por el orden de dos operaciones; y el
+      validador de promociones no se llamaba nunca.
+
+      **Una operación nueva sobre una entidad existente es una segunda puerta
+      a una casa cuyas cerraduras están todas en la primera.** Y no se
+      descubren mirando la puerta nueva: se enumeran desde la vieja.
+
+      Por eso el endpoint de edición ahora dice **"todas las validaciones de
+      crear, sin excepción, desde las mismas definiciones"** en vez de una
+      lista — una lista se puede completar mal y se ve igual de completa.
+
+    ★ NOTA DE MÉTODO — LA GUARDA QUE ENCONTRÓ EL HUECO MÁS CARO NO SABÍA NADA
+      DEL DOMINIO
+      Lo dijo el agente del Dashboard sobre la reversión de v0.99.2: *"lo que
+      la corrigió no fue un argumento mejor sino una comparación mecánica
+      entre dos schemas. La guarda no sabía nada de promociones — solo comparó
+      lo que se manda con lo que se recibe."*
+
+      **Es el argumento más fuerte que existe a favor de la regla 1.** Una
+      guarda que enumera desde la declaración no necesita entender el problema
+      para encontrarlo, y por eso encuentra los que nadie estaba buscando.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.99.2 — EVALUÉ MAL LA GRAVEDAD, Y LA MEDICIÓN ME CORRIGIÓ
@@ -10557,6 +10614,39 @@ paths:
         intermedio por cada operación y una forma de aplicarse a medias; un
         reemplazo completo no. Es la misma razón por la que un borrador
         guarda un `OrderCreate` entero y no un parche.
+
+        ★⚠️⚠️ EDITAR APLICA **TODAS** LAS VALIDACIONES DE CREAR, SIN
+        EXCEPCIÓN, Y DESDE LAS MISMAS DEFINICIONES.
+
+        No es una lista que haya que recordar: **es la misma puerta con dos
+        entradas.** Todo lo que un pedido nuevo tiene que cumplir para
+        existir, un pedido editado tiene que cumplirlo para seguir
+        existiendo — bloques de promoción íntegros, promoción vigente y
+        asignada al vendedor, listas de precio autorizadas, todo.
+
+        ⚠️ POR QUÉ ESTO ESTÁ ESCRITO CON ESTE ÉNFASIS. Al implementar D6 se
+        midió, con una sonda real, que el camino de edición **esquivaba
+        cuatro validaciones de promoción** porque el validador se llamaba solo
+        desde la creación —su propio comentario decía "solo para pedidos
+        nuevos"—. Resultado medido:
+
+            se quita la línea de CONDICIÓN y se deja la de BENEFICIO
+            → 200 OK · APROBADA · total 0.00 · mercancía gratis
+
+        Un pedido aprobado, por cero pesos, sin la compra que habilita el
+        regalo. Y silencioso: pasa cartera (un total de 0 nunca excede cupo) y
+        llega a facturación como cualquier otro.
+
+        ★ Y ES LA TERCERA VEZ QUE APARECE LA MISMA FORMA EN ESTE BLOQUE:
+        `controlled_sale_warnings` se contaba a sí mismo al editar; el
+        evaluador de cupo era correcto al crear por el ORDEN de dos
+        operaciones; y el validador de promociones no se llamaba nunca.
+
+        **D6 abrió una segunda puerta a una casa que tenía todas las
+        cerraduras en la puerta principal.** La pregunta correcta no es "¿falta
+        esta validación?" sino **"¿qué hace la creación que la edición no
+        hace?"** — enumerado desde el camino de creación, no desde lo que
+        alguien notó.
 
         ★ SE RE-EVALÚAN CUPO Y MORA, CON LOS NÚMEROS DE HOY
         No con los del día en que se tomó el pedido. Si el resultado ya no
