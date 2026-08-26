@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.98.0
+  version: 0.99.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -223,6 +223,47 @@ info:
          hacia el mismo lado, invertir una comparación habría pasado en verde.
          Cualquier prueba sobre estos dos tiempos necesita las dos
          direcciones.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.99.0 — LA LISTA ESCRITA AL MONTAR YA NACE VIEJA
+    ══════════════════════════════════════════════════════════════════════════
+
+    Solo texto. Ninguna forma cambia. Una regla más, de la limpieza del
+    montaje de B1.
+
+    ★ 15. UN MONTAJE CRECE MIENTRAS SE USA
+      Para verificar B1 en vivo se montó un camión de prueba en dev, y al
+      montarlo se anotó qué borrar después: recolecciones, carril, órdenes,
+      camión, y el nombre en el catálogo de reparto. Cinco cosas.
+
+      **Al borrar aparecieron ocho**, incluidas 17 instantáneas de bins que no
+      existían cuando se escribió la lista — las creó la app de bodega al
+      hacer `start`, que es precisamente lo que se le había pedido hacer.
+
+      *"Un montaje crece mientras se usa; la lista escrita al montarlo ya nace
+      vieja."*
+
+      **Es la regla 1 aplicada a la limpieza: el universo de lo que hay que
+      borrar se enumera desde el ESTADO ACTUAL, no desde la lista que alguien
+      escribió al construirlo.** Una lista es una foto; un montaje en uso es
+      un proceso.
+
+      ⚠️ Y el modo de fallo es el de siempre: lo que queda colgando **no
+      falla**. Nadie ve un error; simplemente hay filas huérfanas que un día
+      alguien encuentra sin saber de dónde salieron. El borrado se verifica
+      con CONTADORES EN CERO, no con la lista tachada.
+
+    ★ Y LA OBSERVACIÓN QUE CIERRA EL DÍA, del agente del middleware
+      *"Las reglas que dejamos hoy no son garantías, son intenciones. La de
+      los cuatro sitios que no deciden se sostiene porque es una función total
+      sin default y el compilador la exige. La del histórico contra el
+      pendiente se sostiene porque hay un test que reenvía el mismo total
+      después de asignar. La de «buscá antes de escribir» no tiene guarda, y
+      por eso falló."*
+
+      **Cada regla de este documento vale lo que valga la guarda que la mide.
+      Las que no tienen guarda son recordatorios, y los recordatorios fallan
+      con prisa.**
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.98.0 — LA REGLA 11 FALLÓ PARA QUIEN LA ESCRIBIÓ, Y ESO
