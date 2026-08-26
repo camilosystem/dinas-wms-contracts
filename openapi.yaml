@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.96.0
+  version: 0.97.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -223,6 +223,73 @@ info:
          hacia el mismo lado, invertir una comparación habría pasado en verde.
          Cualquier prueba sobre estos dos tiempos necesita las dos
          direcciones.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.97.0 — UNA AFIRMACIÓN DEL PROPIO CONTRATO QUE ERA FALSA
+    ══════════════════════════════════════════════════════════════════════════
+
+    Solo texto. Ninguna forma cambia.
+
+    🔴 v0.57.0 AFIRMÓ ALGO QUE NO PODÍA SABER
+      Al agregar `salesperson_name` a `OrderSummary`, este documento escribió
+      que los tres consumos quedaban cubiertos "porque la estructura no lo
+      permite, no porque alguien se acordó".
+
+      **La estructura no lo permite EN EL CONTRATO.** No dice nada sobre los
+      tipos de nadie. Medido al implementar D6: en el middleware,
+      `OrderDetailDto` y `HeldOrderDto` no heredan de `OrderSummaryDto`
+      aunque el contrato los componga con `allOf`, así que los seis campos
+      nuevos entraron en uno y no en los otros dos.
+
+      **`allOf` es una promesa sobre lo que viaja por el cable, no sobre la
+      jerarquía de tipos de ningún consumidor.**
+
+      Es la forma que este contrato lleva toda la sesión persiguiendo,
+      aplicada al contrato mismo: **una garantía estructural declarada en un
+      lado no obliga al otro.** Y la más peligrosa, porque suena a que ya está
+      resuelto.
+
+    ──────────────────────────────────────────────────────────────────────────
+    ★ MÉTODO — DOS REGLAS MÁS, LAS DOS DEL SEXTO SABOTAJE DE D6
+
+    ★ 12. UNA DERIVACIÓN QUE CORRE AL CREAR Y AL EDITAR TIENE QUE DECIR SI EL
+          SUJETO SE CUENTA A SÍ MISMO
+      El evaluador de venta controlada corre ANTES de agregar el pedido al
+      contexto, así que al crear no se incluye. **Al editar, el pedido ya
+      existe con sus líneas viejas — y se contaba a sí mismo.** Bajar de 20 a
+      2 con tope 5 seguía avisando, porque veía 20 + 2.
+
+      El mismo código, correcto en un momento y equivocado en el otro, sin
+      cambiar una línea. Es la tercera vez en esta sesión que aparece esa
+      forma: la propiedad que hace posible V1(convertir) es la que vuelve a D6
+      un defecto, y `applyStatusUpdate` sin tocar líneas es virtud y agujero
+      según el bloque.
+
+    ★ 13. "QUEDÓ VACÍO" NO DISTINGUE DOS CAUSAS
+      Con el defecto arreglado, el sabotaje seguía en verde: quitar el borrado
+      de avisos → verde; no re-evaluar nada → verde otra vez. El test probaba
+      que los avisos VIEJOS desaparecen, no que los NUEVOS se calculan.
+
+      Lo dijo el agente: *"«quedó vacío» no distingue «se recalculó y no hay
+      exceso» de «se borró y nadie miró»."*
+
+      Es la misma emptiness que ya costó dos veces —un `Assert.All` sobre cero
+      elementos, y un `unassigned_bins: []` que no dice nada sobre la forma de
+      sus elementos—. **Un resultado vacío es compatible con que el trabajo se
+      hizo y con que no se hizo.** La única salida es la otra dirección:
+      editar hacia arriba tiene que CREAR el aviso, y eso solo ocurre si
+      alguien evaluó las líneas nuevas.
+
+    ★ Y UNA CORRECCIÓN DE MEDIO CAMINO QUE VALE POR SÍ SOLA
+      El agente concluyó que una línea era código muerto y la quitó. El test
+      la puso en rojo. Lo que hacía el trabajo no era esa línea sino cargar
+      los avisos *tracked* — sin la carga, el ORM no sabe que existen. La
+      restauró **con la explicación medida en vez de la que había supuesto.**
+
+      Y dos premisas suyas fallaron antes: un test escrito contra el modelo de
+      venta controlada anterior a v0.77.0, donde el tope salía del ítem y hoy
+      vive en un cupo por vendedor. **Un test cuya premisa no se cumple no
+      prueba lo contrario de lo que dice: no prueba nada.**
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.96.0 — ASIGNAR SUMA, NUNCA PISA
@@ -2585,6 +2652,26 @@ info:
       —que es exactamente la forma de los tres huecos de v0.30.0 y v0.31.0—
       y no se pudo olvidar porque la estructura no lo permite, no porque
       alguien se acordó.
+
+      ⚠️⚠️ CORREGIDO EN v0.97.0 — ESA ÚLTIMA FRASE ERA FALSA, Y ES MÍA.
+      La estructura no lo permite **en el contrato**. No dice nada sobre los
+      tipos de nadie.
+
+      Medido al implementar D6: en el middleware, `OrderDetailDto` y
+      `HeldOrderDto` **no heredan** de `OrderSummaryDto` aunque el contrato
+      los componga con `allOf`. Agregar seis campos al resumen no los puso en
+      los otros dos. Su propio archivo lo advertía —"lo caza la capa 4 del
+      barrido, no el compilador"— y esta vez lo cazaron los tests de D6.
+
+      **`allOf` es una promesa sobre lo que viaja por el cable, no sobre la
+      jerarquía de tipos de ningún consumidor.** Un campo agregado a un schema
+      base llega a los compuestos en el CONTRATO; en cada implementación llega
+      solo si esa implementación decidió componer también, y ninguna está
+      obligada.
+
+      Regla que queda: cuando este documento agregue un campo a un schema que
+      otros componen, lo dice — **y dice que la propagación es del contrato,
+      no de tu código.**
 
       Efecto colateral y deliberado: también lo reciben `GET /my-orders` y
       `GET /admin/trucks/available-orders`, que devuelven el mismo schema. Es
