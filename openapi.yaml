@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.99.0
+  version: 0.99.1
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -223,6 +223,62 @@ info:
          hacia el mismo lado, invertir una comparación habría pasado en verde.
          Cualquier prueba sobre estos dos tiempos necesita las dos
          direcciones.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.99.1 — UN HUECO QUE D6 NO CREÓ PERO SÍ VOLVIÓ VISIBLE
+    ══════════════════════════════════════════════════════════════════════════
+
+    Solo texto. Ninguna forma cambia. **Se documenta un hueco y NO se arregla
+    ahora**, con la razón escrita.
+
+    🔴 `OrderDetailLine` NO LLEVA NINGÚN CAMPO DE PROMOCIÓN
+      Ni `promotion_group_id` ni `promotion_role`. `OrderLine` —lo que se
+      MANDA— sí los tiene. Lo que se DEVUELVE en el detalle, no.
+
+      Consecuencia que ya existía y que nadie había topado: **la oficina nunca
+      pudo ver la estructura de promoción en el detalle de un pedido.** Un
+      bloque indivisible de condición + beneficio se le muestra como líneas
+      sueltas, una de ellas con 100% de descuento y sin explicación.
+
+    ⚠️ Y D6 LO VUELVE PEOR PARA EL VENDEDOR, que es la parte nueva
+      Antes, app-sales conservaba SUS líneas locales —con la agrupación de
+      promoción intacta— porque el canal de sync nunca le devolvía líneas.
+      Desde D6, una orden editada **reemplaza** esas líneas por las de la
+      oficina, que son planas.
+
+      O sea: **el vendedor pierde información que tenía.** Una línea de
+      beneficio al 100% de descuento pasa a mostrarse como "100% de
+      descuento", sin decir por qué, y él no puede explicárselo al cliente que
+      tiene delante.
+
+      Es la forma de siempre —un número sin su explicación— con el agravante
+      de que aquí el número es correcto: no hay nada que se vea mal.
+
+    ★ POR QUÉ NO SE ARREGLA AHORA, dicho para que sea una decisión y no un
+      olvido
+      Agregar los dos campos es aditivo y trivial de escribir. Lo que no es
+      trivial es lo que sigue: el middleware tiene que poblarlos desde tres
+      proyecciones, y tres consumidores tienen que decidir qué dibujan con
+      ellos. **Es una ronda completa a seis días de una demo, por un camino
+      que la demo no recorre** — editar un pedido que tiene promoción.
+
+      Queda en la lista de después del 2 de septiembre, y arreglará las DOS
+      mitades de una vez: la oficina ganará la estructura que nunca tuvo.
+
+    ★ LA MITIGACIÓN QUE SÍ ENTRA, y no cuesta nada
+      La app del vendedor ya sabe que el pedido fue editado —`last_edited_at`
+      y `last_edit_note` llegan—. **Ese aviso tiene que estar junto a las
+      líneas, no solo arriba de la pantalla.** Unas líneas planas presentadas
+      como si fueran las que él armó son una mentira barata de evitar; las
+      mismas líneas bajo un "la oficina editó este pedido" son un dato
+      honesto.
+
+    ★ NOTA SOBRE LA NUMERACIÓN — POR QUÉ ESTA ES 0.99.1 Y NO 1.0.0
+      Se reserva **v1.0.0 para el contrato tal como se demuestre el 2 de
+      septiembre de 2026**. Ese número va a significar una sola cosa y va a
+      seguir significándola: *esto es lo que vieron los dueños.* Gastarlo en
+      una corrección de texto lo dejaría sin poder nombrar el único momento
+      que de verdad hay que poder nombrar.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.99.0 — LA LISTA ESCRITA AL MONTAR YA NACE VIEJA
@@ -21615,6 +21671,11 @@ components:
                       manda ya sumada para que ninguna pantalla vuelva a
                       hacer la cuenta.
 
+    # ⚠️⚠️ HUECO CONOCIDO, medido en v0.99.1 — `OrderDetailLine` NO LLEVA
+    # NINGÚN CAMPO DE PROMOCIÓN. Ni `promotion_group_id` ni `promotion_role`,
+    # que `OrderLine` sí tiene. Ver el bloque de v0.99.1 en el changelog: la
+    # oficina nunca pudo ver la estructura de promoción en el detalle, y desde
+    # D6 el vendedor PIERDE la que tenía cuando su pedido se edita.
     OrderDetailLine:
       type: object
       properties:
