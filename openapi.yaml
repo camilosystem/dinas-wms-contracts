@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.97.0
+  version: 0.98.0
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -223,6 +223,80 @@ info:
          hacia el mismo lado, invertir una comparación habría pasado en verde.
          Cualquier prueba sobre estos dos tiempos necesita las dos
          direcciones.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.98.0 — LA REGLA 11 FALLÓ PARA QUIEN LA ESCRIBIÓ, Y ESO
+    ENSEÑA MÁS QUE LA REGLA
+    ══════════════════════════════════════════════════════════════════════════
+
+    Solo texto. Ninguna forma cambia. Es la lección más importante del día y
+    no cabía en una versión con formas.
+
+    🔴 EL CASO
+      Al implementar D6, el agente del middleware necesitaba las líneas de un
+      pedido editado en `/sync/orders`. El contrato dice
+      `lines: $ref OrderDetailLine` — con `item_name` y `pallets`. Escribió
+      una forma propia, más chica, sin mirar la que ya existía.
+
+      Lo cazó el barrido de contrato: *"el contrato promete
+      `orders.lines.item_name` y la respuesta no lo trae"*. **2 de 1555
+      propiedades comparadas.**
+
+      Y su encuadre corrige el mío: **una línea que trae menos de lo que el
+      contrato promete no es "una versión reducida", es una promesa
+      incumplida.** El vendedor no habría podido mostrar el nombre del
+      producto que le acababan de cambiar.
+
+    ★ LO INCÓMODO, Y ES LO QUE HAY QUE ESCRIBIR
+      Es el MISMO defecto del `Optional<T>` de dos horas antes, aplicado a un
+      schema en vez de a un tipo. **Y la regla 11 —"hay que buscar antes de
+      escribir"— la escribió él, esta misma sesión, después de pagarla.**
+
+      *"La conocía, la había pagado, y volví a hacerlo."*
+
+      **Las dos veces lo salvó una MÁQUINA comparando contra la declaración:**
+      el compilador la primera, el barrido de contrato la segunda. No la
+      disciplina, no la memoria, no la regla.
+
+      ⚠️ CONCLUSIÓN QUE CAMBIA CÓMO SE LEEN TODAS LAS DEMÁS REGLAS DE ESTE
+      DOCUMENTO: **la regla 11 no es una regla, es un hábito — y los hábitos
+      fallan justo cuando hay prisa, que es cuando importan.** Lo que la hace
+      cumplir no es recordarla: es la regla 1. Un instrumento que enumera
+      desde la DECLARACIÓN y compara contra lo que hay.
+
+      Ninguna de estas reglas se sostiene sola. Cada una necesita una guarda
+      que la mida, o vuelve a pasar.
+
+    ──────────────────────────────────────────────────────────────────────────
+    ★ 14. LO QUE SOSTIENE UNA CORRECCIÓN PUEDE NO SER LA LÍNEA QUE ESTÁS
+          MIRANDO
+
+      Dos casos medidos el mismo día, y es la forma más difícil de ver de
+      todas las que aparecieron:
+
+      · `EvaluateAsync` era correcto AL CREAR por una propiedad del **orden de
+        las operaciones**, no del código: el pedido aún no estaba en el
+        contexto, así que no se contaba a sí mismo. Esa corrección vivía en un
+        comentario y en el orden de dos líneas. **D6 no la rompió — le cambió
+        el contexto, y la virtud pasó a agujero sin que nadie tocara nada.**
+
+      · Un `RemoveRange` parecía código muerto porque quitarlo dejaba el
+        sabotaje en verde. **El verde venía de que una carga *tracked* en otro
+        lugar ya hacía el trabajo.** Sin esa carga, el ORM no sabe que los
+        registros existen y no puede huerfanizarlos.
+
+      En los dos, lo que sostenía la corrección estaba fuera de la línea
+      examinada. Consecuencias, las dos incómodas:
+
+        1. Un cambio que NO toca un código puede romperlo, porque lo que lo
+           hacía correcto era el contexto.
+        2. Una "limpieza" que SÍ lo toca puede no romper lo que crees, y su
+           verde te confirma una explicación equivocada.
+
+      La única defensa medida hasta ahora: **cuando algo sea correcto por una
+      razón que no está escrita en el lugar donde vive, escribirla ahí** — y
+      preferir una guarda a un comentario, porque un comentario no falla
+      cuando el contexto cambia.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.97.0 — UNA AFIRMACIÓN DEL PROPIO CONTRATO QUE ERA FALSA
