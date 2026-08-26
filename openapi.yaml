@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Dinas WMS — API
-  version: 0.99.1
+  version: 0.99.2
   description: >
     Contrato de la API del middleware Dinas WMS.
 
@@ -223,6 +223,57 @@ info:
          hacia el mismo lado, invertir una comparación habría pasado en verde.
          Cualquier prueba sobre estos dos tiempos necesita las dos
          direcciones.
+
+    ══════════════════════════════════════════════════════════════════════════
+    CAMBIOS EN v0.99.2 — EVALUÉ MAL LA GRAVEDAD, Y LA MEDICIÓN ME CORRIGIÓ
+    ══════════════════════════════════════════════════════════════════════════
+
+    Dos campos nuevos en `OrderDetailLine`. Aditivo. **Revierte la decisión de
+    v0.99.1 de NO arreglar este hueco**, y la razón de la reversión importa
+    más que el arreglo.
+
+    🔴 LO QUE ESCRIBÍ EN v0.99.1, Y POR QUÉ ESTABA MAL
+      Documenté el hueco como una **degradación de visualización**: el
+      vendedor pierde la agrupación de promoción cuando le editan un pedido.
+      Con esa gravedad, no arreglarlo a seis días de una demo era razonable.
+
+      **La gravedad era otra.** El agente del Dashboard lo midió con su guarda
+      de peticiones: `PATCH .../edit` exige líneas con forma `OrderLine`, que
+      lleva los dos campos de promoción. `OrderDetail.lines` es
+      `OrderDetailLine`, que no los llevaba.
+
+      **El canal de LECTURA no devolvía lo que el de ESCRITURA exige.**
+
+      Consecuencia real: **un pedido con promoción no se podía editar.** La
+      oficina lee el detalle, recibe líneas planas, las manda de vuelta, y o
+      el servidor rechaza o el bloque se destruye. Y la pantalla no podía ni
+      DETECTAR que el pedido tenía una promoción, así que tampoco podía avisar
+      antes de intentarlo.
+
+      D6 salió con un agujero funcional sobre una clase entera de pedidos — y
+      las promociones no son un caso raro en este negocio.
+
+    ★ LA REGLA QUE DEJA, y es sobre decidir alcance, no sobre promociones
+      **Una decisión de "esto no se arregla ahora" vale lo que valga la
+      evaluación de gravedad que la sostiene.** Aquí la evaluación era mía, no
+      estaba medida, y era optimista. Cuando alguien la mide y sale peor, la
+      decisión se revierte — **no se defiende porque ya estaba tomada.**
+
+      Es la misma forma de todo el día: lo que sostenía la decisión no era el
+      argumento visible (el calendario), era una premisa que nadie había
+      comprobado.
+
+    ★ UN CAMBIO ADITIVO ARREGLA TRES COSAS
+      1. La oficina puede editar un pedido con promoción.
+      2. La oficina ve por fin la estructura de promoción en el detalle — un
+         hueco anterior a D6 que nadie había topado.
+      3. El vendedor deja de perder la agrupación cuando le editan el pedido,
+         que era la mitad que sí se había documentado.
+
+    ⚠️ Y LA REGLA DURADERA DE `promotion_group_id` SIGUE INTACTA: es el
+      `promotion_id` de la promoción, **no un uuid nuevo**. Se devuelve tal
+      cual y se manda tal cual. Un uuid inventado ahí produce
+      `400 invalid_promotion`, y ya costó dos versiones en su momento.
 
     ══════════════════════════════════════════════════════════════════════════
     CAMBIOS EN v0.99.1 — UN HUECO QUE D6 NO CREÓ PERO SÍ VOLVIÓ VISIBLE
@@ -21671,11 +21722,10 @@ components:
                       manda ya sumada para que ninguna pantalla vuelva a
                       hacer la cuenta.
 
-    # ⚠️⚠️ HUECO CONOCIDO, medido en v0.99.1 — `OrderDetailLine` NO LLEVA
-    # NINGÚN CAMPO DE PROMOCIÓN. Ni `promotion_group_id` ni `promotion_role`,
-    # que `OrderLine` sí tiene. Ver el bloque de v0.99.1 en el changelog: la
-    # oficina nunca pudo ver la estructura de promoción en el detalle, y desde
-    # D6 el vendedor PIERDE la que tenía cuando su pedido se edita.
+    # ✅ CERRADO EN v0.99.2 — este schema YA LLEVA los dos campos de promoción.
+    # El hueco descrito en v0.99.1 resultó ser peor de lo evaluado: no era una
+    # degradación de pantalla, era que un pedido CON PROMOCIÓN no se podía
+    # editar. Ver el bloque de v0.99.2.
     OrderDetailLine:
       type: object
       properties:
@@ -21708,6 +21758,41 @@ components:
             línea. Para el cálculo equivale a "sin descuento", pero NO es lo
             mismo que un 0 explícito: uno es silencio y el otro una
             decisión.
+        promotion_group_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            ★ NUEVO en v0.99.2. El bloque de promoción al que pertenece esta
+            línea. `null` = línea normal, que es el caso mayoritario.
+
+            ⚠️⚠️ ESTABA EN `OrderLine` —lo que se MANDA— Y NO EN ESTE SCHEMA,
+            que es lo que se DEVUELVE. **El canal de lectura no devolvía lo
+            que el de escritura exige**, y eso tuvo una consecuencia que se
+            evaluó mal cuando se documentó como hueco conocido en v0.99.1:
+
+            **un pedido con promoción no se podía editar.** La oficina leía el
+            detalle, recibía líneas planas, y al mandarlas de vuelta o el
+            servidor rechazaba o el bloque se destruía. Y la pantalla **no
+            podía ni detectar** que el pedido tenía uno, así que tampoco podía
+            avisar antes de intentarlo.
+
+            Es el mismo `promotion_group_id` de siempre: **es el
+            `promotion_id` de la promoción, no un uuid nuevo.** Se devuelve tal
+            cual y se manda tal cual.
+        promotion_role:
+          type: string
+          nullable: true
+          enum: [CONDITION, BENEFIT, null]
+          description: >
+            ★ NUEVO en v0.99.2. Qué papel juega esta línea dentro de su bloque.
+            `null` exactamente cuando `promotion_group_id` es `null`.
+
+            ⚠️ SIN ESTE CAMPO, UNA LÍNEA DE BENEFICIO AL 100% DE DESCUENTO SE
+            VE COMO UN DESCUENTO CUALQUIERA. El número es correcto y no hay
+            nada que se vea mal — que es lo que lo vuelve difícil de encontrar.
+            El vendedor no puede explicárselo al cliente que tiene delante, y
+            la oficina no puede distinguir un regalo de una rebaja.
         line_total:
           type: number
           format: double
